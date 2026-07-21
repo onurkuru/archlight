@@ -53,16 +53,14 @@ scene 480x272  ->  bright 240x136  ->  blur H  ->  blur V  ->  composite 960x544
 
 Frame stats print once per second: fps, ms, draw calls, quads.
 
-### Shader binaries on Vita
+### Shaders on Vita
 
-vitaGL can compile GLSL at runtime, but only on a console that has
-`libshacccg.suprx` installed — an unacceptable thing to ask of players. So:
+Shaders are compiled from GLSL at boot by vitaGL, which requires
+**`libshacccg.suprx`** to be installed on the console — standard on jailbroken
+Vitas and installable from the Vita Homebrew Browser.
 
-1. Run the VPK once on a dev console with the compiler installed. Each shader
-   stage is dumped to `ux0:data/arclight/shaders/*.gxp`.
-2. Copy those files into `shaders/` in this repo.
-3. Re-run cmake and rebuild. They are picked up automatically and loaded via
-   `glShaderBinary`, and the compiler is never touched again.
+If a `shaders/<name>.<stage>.gxp` binary is ever placed next to the GLSL source,
+it is loaded instead and the compiler is skipped.
 
 ## Licence
 

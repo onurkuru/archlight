@@ -24,21 +24,17 @@ multi-pass post stack (emissive bloom, reflections, LUT grade). That is not prac
 `vita2d`'s fixed sprite pipeline, and writing raw `sceGxm` costs weeks. vitaGL also keeps the
 renderer ~95 % shared with the desktop GL build, which is where 90 % of iteration happens.
 
-### Shader distribution decision (important)
+### Shader distribution
 
-vitaGL's runtime GLSL path depends on `libshacccg.suprx`, which end users must extract on
-their own console. **We will not ship a dependency on that.** Instead:
+Shaders are authored once in GLSL ES 1.00 and compiled at boot by vitaGL's shark backend,
+which needs `libshacccg.suprx` on the console. That is a normal prerequisite in the Vita
+homebrew scene (installable from the Vita Homebrew Browser), so it is documented in the
+README rather than engineered around.
 
-- Shaders are authored once in GLSL ES 1.00.
-- At build time, a CMake step compiles each shader to a `.gxp` binary with the VitaSDK
-  shader compiler and embeds it in the VPK.
-- At runtime the Vita build loads binaries via `glShaderBinary`; the desktop build compiles
-  the same sources with `glShaderSource`.
-- A thin `gfx_shader_load(name)` hides the difference.
-
-**Spike this in Milestone 0** — it is the single highest-risk assumption in the plan. Fallback
-if binary loading proves painful: ship `libshacccg.suprx` install instructions in the README
-(common practice in Vita homebrew) and compile at boot with a cached result.
+`gfx_shader_load(name)` will still prefer a `shaders/<name>.<stage>.gxp` binary if one is
+present, so binaries can be baked in later — for boot time, not for distribution — without
+changing any call site. The desktop build compiles the same sources against GLSL 3.30 via a
+dialect preamble.
 
 ---
 
@@ -179,7 +175,7 @@ self-verified without hardware in the loop.
 
 | M | Name | Duration | Exit criteria |
 | --- | --- | --- | --- |
-| **M0** | **vitaGL spike** | 1 week | *(in progress — see §10)* Full post stack at 480×272 with 1500 sprites, running on real hardware at ≥60 fps, shaders loaded from precompiled `.gxp`. **Go/no-go for the whole render plan.** |
+| **M0** | **vitaGL spike** | 1 week | *(in progress — see §10)* Full post stack at 480×272 with 1500 sprites, running on real hardware at ≥60 fps. **Go/no-go for the whole render plan.** |
 | **M1** | Engine core | 3 weeks | Sprite batcher, atlases, camera, tilemap, fixed-timestep loop, input, desktop+Vita parity |
 | **M2** | Movement vertical slice | 3 weeks | All 7 verbs, tuned, in one grey-box level. **Playtest gate: is running around a bare room already fun?** If no, stop and re-tune. |
 | **M3** | The look | 3 weeks | Full post stack: light, bloom, reflections, LUT, rain, fog. One district's first 30 s at final visual quality. |
@@ -199,8 +195,8 @@ tooling must be genuinely fast before M6 starts.
 
 | Risk | Severity | Mitigation |
 | --- | --- | --- |
-| Precompiled shader path doesn't work as expected | **High** | M0 spike is exactly this. Fallback: `libshacccg.suprx` + boot-time compile with cache. |
-| Fill rate: 4-pass stack too slow even at 480×272 | High | Passes are individually switchable; drop order = reflections → god rays → CA → bloom half-res. Ship a "performance mode" toggle. |
+| Fill rate: the post stack too slow even at 480×272 | **High** | The one thing M0 exists to measure. Passes are individually switchable; drop order = reflections → god rays → CA → bloom half-res. Ship a "performance mode" toggle. |
+| GLSL that compiles on desktop but not through shark | Medium | Compile every shader on hardware as soon as it is written, not at integration time. |
 | Content scope (25 levels solo) | High | Tools first (M4). Cut to 4 districts / 20 levels if M6 slips past week 6. |
 | Asset licensing on the paid ansimuz packs | Medium | See [ASSETS.md](ASSETS.md); verify each pack's licence text *before* it enters the repo. |
 | vitaGL API gaps vs desktop GL | Medium | Restrict to a hand-written "GL subset we allow" header; CI-ish grep to catch calls outside it. |
@@ -212,10 +208,8 @@ tooling must be genuinely fast before M6 starts.
 ## 9. Immediate Next Steps
 
 1. Run `arclight.vpk` on hardware and read the frame stats — the actual M0 verdict.
-2. Collect the shader `.gxp` dumps from `ux0:data/arclight/shaders/`, commit them,
-   rebuild, and confirm a clean console (no `libshacccg.suprx`) runs the VPK.
-3. Buy/collect the asset packs, fill in the licence audit in [ASSETS.md](ASSETS.md).
-4. Grey-box `1-1` in Tiled.
+2. Buy/collect the asset packs, fill in the licence audit in [ASSETS.md](ASSETS.md).
+3. Grey-box `1-1` in Tiled.
 
 ---
 
@@ -233,9 +227,8 @@ tooling must be genuinely fast before M6 starts.
   scanlines and radial chromatic aberration.
 - One GLSL source tree serves both platforms via a preamble that maps
   `attribute`/`varying`/`TEX2D`/`FRAGCOLOR` onto GLSL ES 1.00 or GLSL 3.30.
-- Shader binary bootstrap implemented: `.gxp` beside the source is preferred and loaded
-  with `glShaderBinary`; otherwise the GLSL is compiled at runtime and dumped to
-  `ux0:data/arclight/shaders/`. **Code path exists but is unverified on hardware.**
+- Shaders compile at boot through shark; a `.gxp` beside the source is loaded instead when
+  present. `libshacccg.suprx` is treated as a console prerequisite, not a project risk.
 - Desktop: 1500 sprites, **8 draw calls, ~0.5 ms/frame** (M-series Mac, vsync off).
 
 **Lesson worth keeping:** the first implementation flipped blend mode per sprite and cost

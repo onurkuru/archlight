@@ -73,20 +73,13 @@ static const char *PRE_FRAG =
 #endif
 
 #ifdef __vita__
-#include <psp2/io/stat.h>
-
-/* Shader binaries: the whole point of this dance is that a released VPK must
- * not require the player to extract libshacccg.suprx onto their own console.
+/* Shaders are compiled from GLSL at runtime by vitaGL's shark backend, which
+ * needs libshacccg.suprx on the console - a prerequisite the Vita homebrew
+ * scene already has installed, so this is not treated as a shipping problem.
  *
- *   1. If shaders/<name>.<stage>.gxp shipped in the VPK, load it - no compiler.
- *   2. Otherwise compile the GLSL at runtime (dev machine, suprx installed)
- *      and dump the binary to ux0:data/arclight/shaders/.
- *   3. The developer copies those .gxp files into the repo and rebuilds; from
- *      then on every install takes path 1.
- *
- * See docs/TECH_PLAN.md - this is the M0 go/no-go assumption. */
-#define GXP_DUMP_DIR "ux0:data/arclight/shaders"
-
+ * A precompiled shaders/<name>.<stage>.gxp is still preferred when one is
+ * present, which keeps the door open for baking binaries in later (faster
+ * boot, one less dependency) without touching call sites. */
 static int load_stage_binary(GLuint sh, const char *name, const char *stage)
 {
     char rel[256];
@@ -101,25 +94,6 @@ static int load_stage_binary(GLuint sh, const char *name, const char *stage)
     return 1;
 }
 
-static void dump_stage_binary(GLuint sh, const char *name, const char *stage)
-{
-    GLsizei len = 0;
-    static uint8_t buf[192 * 1024];
-
-    vglGetShaderBinary(sh, sizeof buf, &len, buf);
-    if (len <= 0) { SDL_Log("gfx: no binary produced for %s.%s", name, stage); return; }
-
-    sceIoMkdir("ux0:data/arclight", 0777);
-    sceIoMkdir(GXP_DUMP_DIR, 0777);
-
-    char path[256];
-    snprintf(path, sizeof path, GXP_DUMP_DIR "/%s.%s.gxp", name, stage);
-    FILE *f = fopen(path, "wb");
-    if (!f) { SDL_Log("gfx: cannot write %s", path); return; }
-    fwrite(buf, 1, (size_t)len, f);
-    fclose(f);
-    SDL_Log("gfx: dumped %s (%d bytes) - copy into shaders/ and rebuild", path, (int)len);
-}
 #endif /* __vita__ */
 
 static GLuint compile_stage(GLenum type, const char *pre, const char *src,
@@ -142,16 +116,11 @@ static GLuint compile_stage(GLenum type, const char *pre, const char *src,
         glGetShaderInfoLog(sh, sizeof log - 1, NULL, log);
         SDL_Log("gfx: %s.%s failed to compile:\n%s", name, stage, log);
 #ifdef __vita__
-        SDL_Log("gfx: (on hardware this usually means libshacccg.suprx is missing "
-                "and no precompiled .gxp shipped)");
+        SDL_Log("gfx: (if the log is empty, libshacccg.suprx is missing on this console)");
 #endif
         glDeleteShader(sh);
         return 0;
     }
-
-#ifdef __vita__
-    dump_stage_binary(sh, name, stage);
-#endif
     return sh;
 }
 
