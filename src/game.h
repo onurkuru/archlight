@@ -21,6 +21,8 @@ typedef enum {
     PS_GROUND, PS_AIR, PS_WALL, PS_DASH, PS_STOMP, PS_TETHER, PS_DEAD
 } arc_pstate;
 
+typedef enum { ANIM_IDLE, ANIM_RUN, ANIM_AIR } arc_anim_cat;
+
 typedef struct {
     float x, y, vx, vy;
     float w, h;
@@ -42,6 +44,9 @@ typedef struct {
 
     float squash;               /* landing squash, drives the only juice we have */
     float apex;                 /* seconds spent near apex, for the hang window */
+
+    arc_anim_cat anim_cat;
+    float anim_t;
 } arc_player;
 
 typedef enum { E_NONE, E_VOLT, E_ECHO, E_CHECKPOINT, E_EXIT, E_ANCHOR, E_HINT } arc_ent_kind;
@@ -102,7 +107,8 @@ typedef struct {
 void  world_load(arc_world *w, int index);
 void  world_reset_to_checkpoint(arc_world *w);
 void  world_update(arc_world *w, const arc_input *in, float dt);
-void  world_render(arc_world *w, const arc_texture *atlas, const arc_shader *sprite);
+void  world_render(arc_world *w, const arc_texture *atlas, const arc_texture *city,
+                   const arc_shader *sprite);
 
 int   world_tile_solid(const arc_world *w, int tx, int ty);
 

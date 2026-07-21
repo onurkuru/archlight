@@ -22,6 +22,11 @@ file(GLOB SHADER_PATHS RELATIVE ${CMAKE_SOURCE_DIR}/shaders
      ${CMAKE_SOURCE_DIR}/shaders/*.gxp)
 set(SHADERS ${SHADER_PATHS})
 
+# Baked art (see tools/atlaspack.py); ships alongside the shaders.
+file(GLOB ASSET_PATHS RELATIVE ${CMAKE_SOURCE_DIR}/assets
+     ${CMAKE_SOURCE_DIR}/assets/*.png)
+set(ASSETS ${ASSET_PATHS})
+
 if(BUILD_VITA)
   include("$ENV{VITASDK}/share/vita.cmake" REQUIRED)
 
@@ -65,6 +70,9 @@ if(BUILD_VITA)
   foreach(s ${SHADERS})
     list(APPEND VPK_FILES FILE ${CMAKE_SOURCE_DIR}/shaders/${s} shaders/${s})
   endforeach()
+  foreach(a ${ASSETS})
+    list(APPEND VPK_FILES FILE ${CMAKE_SOURCE_DIR}/assets/${a} assets/${a})
+  endforeach()
 
   vita_create_self(${PROJECT_NAME}.self ${PROJECT_NAME} UNSAFE)
   vita_create_vpk(${PROJECT_NAME}.vpk ${VITA_TITLEID} ${PROJECT_NAME}.self
@@ -84,8 +92,10 @@ else()
     target_link_libraries(${PROJECT_NAME} m)
   endif()
 
-  # Shaders are loaded at runtime relative to the binary.
+  # Shaders and baked art are loaded at runtime relative to the binary.
   add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
-      ${CMAKE_SOURCE_DIR}/shaders $<TARGET_FILE_DIR:${PROJECT_NAME}>/shaders)
+      ${CMAKE_SOURCE_DIR}/shaders $<TARGET_FILE_DIR:${PROJECT_NAME}>/shaders
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+      ${CMAKE_SOURCE_DIR}/assets $<TARGET_FILE_DIR:${PROJECT_NAME}>/assets)
 endif()

@@ -35,7 +35,7 @@ void game_build_atlas(arc_texture *tex);   /* game.c */
 
 static arc_shader sh_sprite, sh_bright, sh_blur, sh_composite;
 static arc_target rt_scene, rt_bloom_a, rt_bloom_b;
-static arc_texture atlas;
+static arc_texture atlas, city;
 static arc_world world;
 
 /* ---------------------------------------------------------------- passes */
@@ -45,7 +45,7 @@ static void pass_scene(void)
     gfx_target_bind(&rt_scene);
     glViewport(0, 0, ARC_W, ARC_H);
     gfx_clear(0.016f, 0.019f, 0.035f, 1.0f);
-    world_render(&world, &atlas, &sh_sprite);
+    world_render(&world, &atlas, &city, &sh_sprite);
 }
 
 static void pass_bright(void)
@@ -220,6 +220,10 @@ int main(int argc, char **argv)
     }
 
     game_build_atlas(&atlas);
+    if (!gfx_texture_load(&city, "assets/atlas_city.png", 0)) {
+        SDL_Log("city atlas load failed - aborting");
+        return 1;
+    }
     font_init();
     world_load(&world, env_level ? atoi(env_level) : 0);
     if (env_warp) {
@@ -245,6 +249,11 @@ int main(int argc, char **argv)
         float dt = (float)((now - prev) / (double)freq);
         prev = now;
         if (dt > 0.25f) dt = 0.25f;
+        /* Capture mode is deterministic: one sim step per rendered frame,
+           independent of wall clock, so ARCLIGHT_SHOT_FRAME=N always means
+           "N/60 simulated seconds" - reproducible regardless of how fast the
+           uncapped loop happens to spin. */
+        if (env_shot) dt = STEP;
 
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
@@ -301,6 +310,7 @@ int main(int argc, char **argv)
     gfx_target_destroy(&rt_bloom_a);
     gfx_target_destroy(&rt_bloom_b);
     gfx_texture_destroy(&atlas);
+    gfx_texture_destroy(&city);
     gfx_shutdown();
 
 #ifdef __vita__

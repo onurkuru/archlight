@@ -23,19 +23,26 @@ Record the audit in this table as it happens:
 
 | Pack | Price | Licence | Verified | Notes |
 | --- | --- | --- | --- | --- |
-| Cyberpunk Street Environment | paid | ? | ☐ | primary tileset, district 1 |
-| Warped City | free | ? | ☐ | |
-| Warped City 2 | free | ? | ☐ | |
-| Synth Cities Environment | free | ? | ☐ | |
-| Sewers Action Pack | free | ? | ☐ | |
-| Warped Caves | free | ? | ☐ | |
-| Mega Bot | free | ? | ☐ | player candidate |
-| Streets of Fight | free | ? | ☐ | humanoid NPCs/enemies |
-| Space Backgrounds | free | ? | ☐ | skyline/void |
-| Warped Highway | $5 | ? | ☐ | optional |
-| Warped City Addon | $9 | ? | ☐ | optional |
-| Warped Synth Cities Backgrounds ADDON | $5 | ? | ☐ | optional |
-| Sci-Fi Icon and Items | $5 | ? | ☐ | UI/collectible icons |
+| Cyberpunk Street Environment | paid | CC0 | ✅ | primary tileset, district 1 |
+| Warped City | free | CC0 | ✅ | primary tileset + player, district 1 |
+| Warped City 2 | free | CC0 | ✅ | district 2 |
+| Synth Cities Environment | free | CC0 | ✅ | district 4 |
+| Sewers Action Pack | free | CC0 | ✅ | district 3 |
+| Warped Caves | free | CC0 | ✅ | district 3 |
+| Streets of Fight | free | CC0 | ✅ | humanoid NPCs/enemies |
+| Space Backgrounds | free | CC0 | ✅ | skyline/void |
+| Warped Highway | $5 | — | ☐ | not downloaded |
+| Warped City Addon | $9 | — | ☐ | not downloaded |
+| Warped Synth Cities Backgrounds ADDON | $5 | — | ☐ | not downloaded |
+| Sci-Fi Icon and Items | $5 | — | ☐ | not downloaded |
+
+Verified 2026-07-21 by reading `public-license.pdf` from inside each downloaded zip
+(identical text in every pack checked): *"All assets included in this package are
+licensed under the Creative Commons Zero (CC0) license, which means you can use them
+freely in any project, whether personal or commercial, without the need for
+attribution. There are no restrictions on use, modification, or redistribution."*
+CC0 explicitly permits redistribution, so packed atlases in the VPK are fine — the
+raw-redistribution caveat in the rule above does not apply to these packs.
 
 *(Prices as listed on the itch.io "Warped Packs" collection, July 2026 — re-check before purchase.)*
 

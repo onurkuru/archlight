@@ -1,6 +1,7 @@
 #include "game.h"
 #include "font.h"
 #include "levels.h"
+#include "atlas_city.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -407,6 +408,7 @@ static void player_update(arc_world *w, arc_player *p, const arc_input *in, floa
         }
         if (box_hits_solid(w, p->x, p->y, p->w, p->h)) release_tether(p);
         gain(p, 6.0f * dt);
+        p->anim_cat = ANIM_AIR;
         return;
     }
 
@@ -516,6 +518,18 @@ static void player_update(arc_world *w, arc_player *p, const arc_input *in, floa
     if (p->y > w->h * TILE + 48.0f) {
         p->state = PS_DEAD;
         p->dead_time = 0;
+    }
+
+    /* ---- animation category ---- */
+    {
+        arc_anim_cat cat = ANIM_IDLE;
+        if (p->state == PS_AIR || p->state == PS_STOMP || p->state == PS_WALL || p->state == PS_DASH)
+            cat = ANIM_AIR;
+        else if (fabsf(p->vx) > 10.0f)
+            cat = ANIM_RUN;
+
+        if (cat != p->anim_cat) { p->anim_cat = cat; p->anim_t = 0; }
+        else p->anim_t += dt;
     }
 }
 
@@ -666,6 +680,46 @@ static void quad(float x, float y, float w, float h, int cell, uint32_t col)
     gfx_batch_quad(x, y, w, h, u0, v0, u1, v1, col);
 }
 
+/* ------------------------------------------------------------- city atlas
+ * Real CC0 art (ansimuz "Warped City") packed by tools/atlaspack.py into
+ * assets/atlas_city.png - see docs/ASSETS.md for the licence audit. */
+
+static void city_uv(arc_rect r, float *u0, float *v0, float *u1, float *v1)
+{
+    const float px = 0.5f / ATLAS_CITY_W, py = 0.5f / ATLAS_CITY_H;
+    *u0 = r.x / (float)ATLAS_CITY_W + px;
+    *v0 = r.y / (float)ATLAS_CITY_H + py;
+    *u1 = (r.x + r.w) / (float)ATLAS_CITY_W - px;
+    *v1 = (r.y + r.h) / (float)ATLAS_CITY_H - py;
+}
+
+static void city_quad(float x, float y, float w, float h, arc_rect r, int flip, uint32_t col)
+{
+    float u0, v0, u1, v1;
+    city_uv(r, &u0, &v0, &u1, &v1);
+    if (flip) { float t = u0; u0 = u1; u1 = t; }
+    gfx_batch_quad(x, y, w, h, u0, v0, u1, v1, col);
+}
+
+static void draw_parallax_layer(arc_world *w, arc_rect r, float factor, float y)
+{
+    float u0, v0, u1, v1;
+    city_uv(r, &u0, &v0, &u1, &v1);
+
+    float world_x = -w->cam_x * factor;
+    float start = fmodf(world_x, (float)r.w);
+    if (start > 0) start -= (float)r.w;
+
+    for (float x = start; x < ARC_W; x += (float)r.w)
+        gfx_batch_quad(x, y, (float)r.w, (float)r.h, u0, v0, u1, v1, rgba(255, 255, 255, 255));
+}
+
+static void draw_parallax(arc_world *w)
+{
+    draw_parallax_layer(w, RECT_SKYLINE_A, 0.04f, 0.0f);
+    draw_parallax_layer(w, RECT_NEAR_BUILDINGS, 0.18f, (float)ARC_H - RECT_NEAR_BUILDINGS.h);
+}
+
 static void draw_tiles(arc_world *w)
 {
     int tx0 = (int)(w->cam_x / TILE) - 1, tx1 = tx0 + ARC_W / TILE + 3;
@@ -688,27 +742,49 @@ static void draw_tiles(arc_world *w)
     }
 }
 
+/* Sprite is bigger than the collision box on purpose - a forgiving hitbox
+   read against a character that fills the frame the way Rayman's does. */
+#define PLAYER_VISUAL_SCALE 0.5f
+
 static void draw_player(arc_world *w)
 {
     arc_player *p = &w->p;
     if (p->state == PS_DEAD) return;
 
+    arc_rect strip;
+    int frames;
+    if (p->anim_cat == ANIM_AIR)      { strip = RECT_PLAYER_JUMP; frames = PLAYER_JUMP_FRAMES; }
+    else if (p->anim_cat == ANIM_RUN) { strip = RECT_PLAYER_RUN;  frames = PLAYER_RUN_FRAMES;  }
+    else                              { strip = RECT_PLAYER_IDLE; frames = PLAYER_IDLE_FRAMES; }
+
+    int frame;
+    if (p->anim_cat == ANIM_AIR) {
+        /* Frame follows vertical velocity, not time: rising, apex and falling
+           are distinct poses in the source strip, so this reads correctly
+           whether the jump is a hop or a full-height leap. */
+        float t = (p->vy + JUMP_V) / (JUMP_V + FALL_MAX);
+        t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+        frame = (int)(t * (frames - 1) + 0.5f);
+    } else {
+        float dur = p->anim_cat == ANIM_RUN ? 0.06f : 0.15f;
+        frame = ((int)(p->anim_t / dur)) % frames;
+    }
+
+    arc_rect r = { strip.x + frame * PLAYER_FRAME_W, strip.y, PLAYER_FRAME_W, PLAYER_FRAME_H };
+
     float sq = p->squash;
-    float h = p->h * (1.0f + sq * 0.6f);
-    float bw = p->w * (1.0f - sq * 0.5f);
-    float x = p->x + (p->w - bw) * 0.5f - w->cam_x;
-    float y = p->y + (p->h - h) - w->cam_y;
+    float dw = PLAYER_FRAME_W * PLAYER_VISUAL_SCALE * (1.0f - sq * 0.35f);
+    float dh = PLAYER_FRAME_H * PLAYER_VISUAL_SCALE * (1.0f + sq * 0.5f);
+    float cx = p->x + p->w * 0.5f - w->cam_x;
+    float feet = p->y + p->h - w->cam_y;
+    float x = cx - dw * 0.5f;
+    float y = feet - dh;
 
-    uint32_t col = rgba(236, 244, 255, 255);
-    if (p->state == PS_DASH)  col = rgba(120, 250, 255, 255);
-    if (p->state == PS_STOMP) col = rgba(255, 190, 120, 255);
-    if (p->invuln > 0 && fmodf(w->time * 20.0f, 2.0f) < 1.0f) col = rgba(255, 90, 120, 255);
+    uint32_t col = rgba(255, 255, 255, 255);
+    if (p->state == PS_DASH) col = rgba(190, 255, 255, 255);
+    if (p->invuln > 0 && fmodf(w->time * 20.0f, 2.0f) < 1.0f) col = rgba(255, 130, 130, 255);
 
-    quad(x, y, bw, h, CELL_SOLID, col);
-
-    /* Visor: the only feature Nine has, and the thing that reads at 32 px. */
-    quad(x + (p->facing > 0 ? bw - 5 : 1), y + 3, 4, 3, CELL_SOLID,
-         rgba(90, 240, 255, 255));
+    city_quad(x, y, dw, dh, r, p->facing < 0, col);
 }
 
 static void draw_enemies(arc_world *w, int additive)
@@ -728,9 +804,13 @@ static void draw_enemies(arc_world *w, int additive)
             if (en->hit_flash > 0)
                 quad(x - 6, y - 6, bw + 12, h + 12, CELL_GLOW, rgba(255, 200, 120, 180));
         } else {
-            uint32_t col = en->hit_flash > 0 ? rgba(255, 240, 220, 255) : rgba(220, 90, 70, 255);
-            quad(x, y, bw, h, CELL_SOLID, col);
-            quad(x + (en->vx >= 0 ? bw - 4 : 1), y + 2, 3, 3, CELL_SOLID, rgba(20, 10, 10, 255));
+            int frame = ((int)(w->time * 10.0f) + i * 3) % DRONE_FRAMES;
+            arc_rect r = { RECT_DRONE.x + frame * DRONE_FRAME_W, RECT_DRONE.y,
+                          DRONE_FRAME_W, DRONE_FRAME_H };
+            uint32_t col = en->hit_flash > 0 ? rgba(255, 220, 190, 255) : rgba(255, 255, 255, 255);
+            float dw = DRONE_FRAME_W * 0.4f, dh = DRONE_FRAME_H * 0.4f;
+            city_quad(x + bw * 0.5f - dw * 0.5f, y + h * 0.5f - dh * 0.5f, dw, dh,
+                     r, en->vx < 0, col);
         }
     }
 }
@@ -837,19 +917,35 @@ static void draw_hints(arc_world *w)
     }
 }
 
-void world_render(arc_world *w, const arc_texture *atlas, const arc_shader *sprite)
+void world_render(arc_world *w, const arc_texture *atlas, const arc_texture *city,
+                  const arc_shader *sprite)
 {
-    /* Alpha layer: tiles, solid entity bodies, the player. */
+    /* Background: real art, parallax-scrolled, drawn first so everything else
+       paints over it. */
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    gfx_batch_begin(sprite, city, ARC_W, ARC_H);
+    draw_parallax(w);
+    gfx_batch_end();
+
+    /* Gameplay layer: tiles and pickups stay procedural (GDD §6.2 - the
+       gameplay layer is the brightest, least busy layer; abstract shapes
+       read cleaner here than the source packs' busy facades would). */
     gfx_batch_begin(sprite, atlas, ARC_W, ARC_H);
     draw_tiles(w);
     draw_ents(w, 0);
-    draw_enemies(w, 0);
+    gfx_batch_end();
+
+    /* Actors: real sprites, on top of the procedural world. */
+    gfx_batch_begin(sprite, city, ARC_W, ARC_H);
     draw_player(w);
+    draw_enemies(w, 0);
+    gfx_batch_end();
+
+    gfx_batch_begin(sprite, atlas, ARC_W, ARC_H);
     draw_plates(w);
     gfx_batch_end();
 
-    /* Additive layer: every glow in the frame, in one draw call. */
+    /* Additive layer: every glow in the frame, procedural. */
     glBlendFunc(GL_SRC_ALPHA, GL_ONE);
     gfx_batch_begin(sprite, atlas, ARC_W, ARC_H);
     draw_ents(w, 1);
