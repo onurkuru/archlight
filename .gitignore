@@ -6,3 +6,7 @@ art-src/
 *.velf
 *.vpk
 .DS_Store
+
+# Generated audio (regenerate with tools/audiopack.py; source music is local)
+assets/audio/
+tools/__pycache__/

@@ -6,7 +6,7 @@
  *   [3] blur V     240x136
  *   [4] composite  960x544   scene + bloom, grade, vignette, scanlines, CA
  *
- * Desktop keys: arrows/WASD move, Z jump, X dash, C tether, DOWN+Z stomp,
+ * Desktop keys: arrows/WASD move, Z jump, X dash, C tether, V melee, DOWN+Z stomp,
  *               SPACE toggles the post stack, R restarts, ESC quits.
  * Env: ARCLIGHT_SHOT=path.bmp (dump one frame and exit), ARCLIGHT_NOVSYNC=1
  */
@@ -18,7 +18,9 @@
 
 #include "gfx.h"
 #include "game.h"
+#include "levels.h"
 #include "font.h"
+#include "audio.h"
 
 #ifdef __vita__
   #include <psp2/kernel/processmgr.h>
@@ -38,6 +40,12 @@ static arc_target rt_scene, rt_bloom_a, rt_bloom_b;
 static arc_texture atlas, city;
 static arc_world world;
 
+/* The opening runs before the first level takes input. -1 means "done": a
+   screenshot or a dev warp skips it entirely, because a capture run that
+   waits six seconds for story is a capture run nobody uses. */
+static int   intro_card = -1;
+static float intro_t = 0.0f;
+
 /* ---------------------------------------------------------------- passes */
 
 static void pass_scene(void)
@@ -45,7 +53,10 @@ static void pass_scene(void)
     gfx_target_bind(&rt_scene);
     glViewport(0, 0, ARC_W, ARC_H);
     gfx_clear(0.016f, 0.019f, 0.035f, 1.0f);
+    world.hide_hud = (intro_card >= 0);
     world_render(&world, &atlas, &city, &sh_sprite);
+    if (intro_card >= 0)
+        world_render_intro(&world, &atlas, &sh_sprite, intro_card, intro_t);
 }
 
 static void pass_bright(void)
@@ -76,7 +87,7 @@ static void pass_blur(arc_target *src, arc_target *dst, float dx, float dy)
     gfx_fullscreen();
 }
 
-static void pass_composite(int post_on, float t)
+static void pass_composite(int post_on, float t, float rain)
 {
     gfx_target_bind(NULL);
     glViewport(0, 0, SCREEN_W, SCREEN_H);
@@ -91,7 +102,7 @@ static void pass_composite(int post_on, float t)
                 post_on ? 0.16f  : 0.0f,
                 post_on ? 0.010f : 0.0f);
     if (sh_composite.u_dir >= 0)
-        glUniform4f(sh_composite.u_dir, t, post_on ? 1.0f : 0.0f, 0, 0);
+        glUniform4f(sh_composite.u_dir, t, post_on ? rain : 0.0f, 0, 0);
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, rt_scene.tex);
@@ -156,6 +167,8 @@ static arc_input gather_input(void)
         in.jump   = SDL_JoystickGetButton(j, 2);
         in.dash   = SDL_JoystickGetButton(j, 1);
         in.tether = SDL_JoystickGetButton(j, 5);
+        in.attack = SDL_JoystickGetButton(j, 3);   /* SQUARE, per GDD §3.1 */
+        in.pulse  = SDL_JoystickGetButton(j, 0);   /* TRIANGLE, per GDD §3.1 */
     }
 #else
     const Uint8 *k = SDL_GetKeyboardState(NULL);
@@ -165,11 +178,46 @@ static arc_input gather_input(void)
     in.jump   = k[SDL_SCANCODE_Z] || k[SDL_SCANCODE_SPACE];
     in.dash   = k[SDL_SCANCODE_X];
     in.tether = k[SDL_SCANCODE_C];
+    in.attack = k[SDL_SCANCODE_V];
+    in.pulse  = k[SDL_SCANCODE_F];
 #endif
 
     in.jump_edge   = in.jump   && !prev.jump;
     in.dash_edge   = in.dash   && !prev.dash;
     in.tether_edge = in.tether && !prev.tether;
+    in.attack_edge = in.attack && !prev.attack;
+    in.pulse_edge  = in.pulse  && !prev.pulse;
+
+    /* Dev affordance: fire a verb on a fixed period so a screenshot run can
+       catch it without a human at the keyboard. Same spirit as ARCLIGHT_SHOT -
+       it exists to make the feel reviewable. */
+    {
+        static float ta = 0, tp = 0, tj = 0;
+        const char *ea = getenv("ARCLIGHT_ATTACK_EVERY");
+        const char *ep = getenv("ARCLIGHT_PULSE_EVERY");
+        const char *ej = getenv("ARCLIGHT_JUMP_EVERY");
+        if (ej) {
+            float period = (float)atof(ej);
+            if (period > 0.01f) {
+                tj += 1.0f / 60.0f;
+                if (tj >= period) { tj = 0; in.jump = 1; in.jump_edge = 1; }
+            }
+        }
+        if (ea) {
+            float period = (float)atof(ea);
+            if (period > 0.01f) {
+                ta += 1.0f / 60.0f;
+                if (ta >= period) { ta = 0; in.attack = 1; in.attack_edge = 1; }
+            }
+        }
+        if (ep) {
+            float period = (float)atof(ep);
+            if (period > 0.01f) {
+                tp += 1.0f / 60.0f;
+                if (tp >= period) { tp = 0; in.pulse = 1; in.pulse_edge = 1; }
+            }
+        }
+    }
     prev = in;
     return in;
 }
@@ -227,7 +275,12 @@ int main(int argc, char **argv)
         return 1;
     }
     font_init();
-    world_load(&world, env_level ? atoi(env_level) : 0);
+    audio_init();
+
+    int level = env_level ? atoi(env_level) : 0;
+    world_load(&world, level);
+    if ((!env_shot && !env_level && !getenv("ARCLIGHT_WARP")) || getenv("ARCLIGHT_INTRO"))
+        intro_card = getenv("ARCLIGHT_INTRO") ? atoi(getenv("ARCLIGHT_INTRO")) : 0;
     if (env_warp) {
         world.check_x = (float)atoi(env_warp) * TILE;
         world.check_y = world.spawn_y - 64.0f;
@@ -241,6 +294,8 @@ int main(int argc, char **argv)
 
     int running = 1, post_on = 1, frames = 0;
     float accum = 0.0f;
+    arc_input latched;
+    memset(&latched, 0, sizeof latched);
     double acc_ms = 0.0;
     Uint64 freq = SDL_GetPerformanceFrequency();
     Uint64 prev = SDL_GetPerformanceCounter();
@@ -261,19 +316,81 @@ int main(int argc, char **argv)
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_QUIT) running = 0;
             if (e.type == SDL_KEYDOWN) {
-                if (e.key.keysym.sym == SDLK_ESCAPE) running = 0;
+                if (e.key.keysym.sym == SDLK_ESCAPE) {
+                    /* Escape skips the whole opening, then quits. */
+                    if (intro_card >= 0) { intro_card = -1; continue; }
+                    running = 0;
+                }
+                if (intro_card >= 0) {
+                    if (++intro_card >= world_intro_cards()) intro_card = -1;
+                    intro_t = 0.0f;
+                    continue;
+                }
                 if (e.key.keysym.sym == SDLK_SPACE)  post_on = !post_on;
-                if (e.key.keysym.sym == SDLK_r) world_load(&world, env_level ? atoi(env_level) : 0);
+                if (e.key.keysym.sym == SDLK_r) world_load(&world, level);
+                /* The results screen advances the campaign. Wrapping at the
+                   end keeps a dev build playable end to end without a menu. */
+                if (e.key.keysym.sym == SDLK_RETURN && world.finished)
+                    world_load(&world, level = (level + 1) % ARC_LEVEL_COUNT);
             }
             if (e.type == SDL_JOYBUTTONDOWN && e.jbutton.button == 11) running = 0;
         }
 
-        /* Fixed 60 Hz simulation, clamped so a hitch cannot spiral. */
-        arc_input in = gather_input();
+        /* Fixed 60 Hz simulation, clamped so a hitch cannot spiral.
+         *
+         * Input is sampled once per *rendered* frame but consumed by the sim at
+         * exactly 60 Hz, and those two rates are not the same number. On a
+         * 120 Hz display roughly half of all rendered frames run no sim step at
+         * all, so an edge computed on one of those frames would be computed,
+         * never consumed, and gone by the next sample - the press simply never
+         * happened. The reverse case is just as wrong: when a hitch makes one
+         * frame run several steps, an un-cleared edge would fire once per step.
+         *
+         * So edges are latched here and cleared by the step that consumes them.
+         * Held state (mx, and the buttons themselves) always tracks the newest
+         * sample, because that is a level, not an event. */
+        arc_input sample = gather_input();
+        latched.mx     = sample.mx;
+        latched.down   = sample.down;
+        latched.jump   = sample.jump;
+        latched.dash   = sample.dash;
+        latched.tether = sample.tether;
+        latched.attack = sample.attack;
+        latched.pulse  = sample.pulse;
+        latched.jump_edge   |= sample.jump_edge;
+        latched.dash_edge   |= sample.dash_edge;
+        latched.tether_edge |= sample.tether_edge;
+        latched.attack_edge |= sample.attack_edge;
+        latched.pulse_edge  |= sample.pulse_edge;
+
+        if (intro_card >= 0) {
+            intro_t += dt;
+            if (intro_t > 3.4f) {            /* auto-advance, unhurried */
+                intro_t = 0.0f;
+                if (++intro_card >= world_intro_cards()) intro_card = -1;
+            }
+            accum = 0.0f;
+        }
+
+        /* Music follows the place, and the Warden takes it over. Set every
+           frame - audio_music() ignores a repeat request, so this is free.
+           (This block was lost in an earlier edit, which is why the game went
+           silent; kept here, next to the loop it belongs to.) */
+        if (!env_shot) {
+            char track[16];
+            if (intro_card >= 0)                snprintf(track, sizeof track, "intro");
+            else if (world.finished)            snprintf(track, sizeof track, "drop");
+            else if (world_boss_active(&world)) snprintf(track, sizeof track, "boss");
+            else snprintf(track, sizeof track, "d%d", world.district + 1);
+            audio_music(track, 0.75f);
+        }
+
         accum += dt;
         int steps = 0;
-        while (accum >= STEP && steps < 4) {
-            world_update(&world, &in, STEP);
+        while (intro_card < 0 && accum >= STEP && steps < 4) {
+            world_update(&world, &latched, STEP);
+            latched.jump_edge = latched.dash_edge = latched.tether_edge =
+                latched.attack_edge = latched.pulse_edge = 0;
             accum -= STEP;
             steps++;
         }
@@ -287,7 +404,7 @@ int main(int argc, char **argv)
             pass_blur(&rt_bloom_b, &rt_bloom_a, 0.0f, 1.0f);
             glEnable(GL_BLEND);
         }
-        pass_composite(post_on, world.time);
+        pass_composite(post_on, world.time, world_rain(&world));
 
         if (env_shot && frames == shot_frame) { dump_frame(env_shot); running = 0; }
 

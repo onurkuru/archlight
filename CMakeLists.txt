@@ -12,7 +12,7 @@ endif()
 project(arclight C)
 set(CMAKE_C_STANDARD 11)
 
-set(SOURCES src/main.c src/gfx.c src/game.c src/font.c)
+set(SOURCES src/main.c src/gfx.c src/game.c src/font.c src/audio.c)
 
 # GLSL sources, plus any precompiled .gxp binaries that have been baked in
 # for boot time (see docs/TECH_PLAN.md §1). Re-run cmake after adding one.
@@ -24,7 +24,8 @@ set(SHADERS ${SHADER_PATHS})
 
 # Baked art (see tools/atlaspack.py); ships alongside the shaders.
 file(GLOB ASSET_PATHS RELATIVE ${CMAKE_SOURCE_DIR}/assets
-     ${CMAKE_SOURCE_DIR}/assets/*.png)
+     ${CMAKE_SOURCE_DIR}/assets/*.png
+     ${CMAKE_SOURCE_DIR}/assets/audio/*.wav)
 set(ASSETS ${ASSET_PATHS})
 
 if(BUILD_VITA)

@@ -3,10 +3,10 @@
 A cinematic 2.5D cyberpunk flow-platformer for PlayStation Vita.
 *Rayman Legends' run, filmed like Replaced.*
 
-**Status: playable on desktop, never run on Vita hardware.** One level (`1-1`, "THE GUTTER")
-with all 7 verbs, one enemy type, and real art. It cross-compiles and packs a VPK, but the
-question M0 exists to answer — whether the SGX543 holds 60 fps with this post stack — is
-still open. No audio yet.
+**Status: playable on desktop, never run on Vita hardware.** Twenty levels across five
+districts — three flow runs and a boss each — four enemy archetypes, a hack gate, and an
+opening. It cross-compiles and packs a VPK, but the question M0 exists to answer — whether
+the SGX543 holds 60 fps with this post stack — is still open.
 
 - [Game Design Document](docs/GDD.md) — story, mechanics, level design, art direction
 - [Technical Plan](docs/TECH_PLAN.md) — vitaGL pipeline, budgets, milestones, risks
@@ -44,6 +44,8 @@ cmake --build build-vita          # -> build-vita/arclight.vpk
 | `X` | arc dash (8-way, ground or air) |
 | `Down + Z` in the air | stomp |
 | `C` | tether (auto-targets the nearest anchor ahead of you) |
+| `V` | fire — Nine's sidearm. A round with a muzzle flash and a little recoil; cyan is yours, orange is theirs. Never interrupts your run |
+| `F` | pulse — EMP the nearest drone (30 Charge): it drops for 3 s, then reboots. Never kills. At a terminal it opens the hack window instead, free — light the relay nodes by running through them before it closes and the gate unbolts |
 | `SPACE` | toggle the post stack (A/B its cost) |
 | `R` | restart the level |
 | `ESC` / Vita `START` | quit |
@@ -54,19 +56,52 @@ cmake --build build-vita          # -> build-vita/arclight.vpk
 | `ARCLIGHT_WARP=tiles` | spawn at that tile x, straight down onto the level |
 | `ARCLIGHT_SHOT=out.bmp` | render one frame, write it, exit (`ARCLIGHT_SHOT_FRAME=n` to wait `n` frames first, e.g. to let physics settle before the dump) |
 | `ARCLIGHT_NOVSYNC=1` | uncap the frame rate, for comparable fps numbers |
+| `ARCLIGHT_ATTACK_EVERY=s` | fire the melee input every `s` seconds, so a `ARCLIGHT_SHOT` run can catch a swing without a human at the keyboard |
+| `ARCLIGHT_PULSE_EVERY=s` | the same, for the pulse |
+| `ARCLIGHT_JUMP_EVERY=s` | the same, for the jump — mashing at a fixed rate is how you reproduce a movement bug the same way twice |
+
+Enemies: **Sentries** are bolted down and cover a lane — routed past, not
+fought. **Wardens** are the district bosses: they survive six hits, hunt you
+rather than patrol, and gain a firing phase as their health drops. The drop
+will not take the package while one is still on the rail.
+
+**Scrappers** are flying drones — bounce targets. **Enforcers** walk the street,
+turn to face you, and shoot after a 0.3 s visor flare. **Sentries** are bolted
+down and hold a lane. **Wardens** are the bosses.
+
+Hazards: **moving platforms** shuttle across gaps (land on top, get carried — the
+street runs underneath, so a mover is always the fast line and never a wall) and
+**containment beams** cycle on and off from ceiling emitters. A beam hurts to
+touch, but it is a rhythm, not a wall — run the gap in its cycle, or `F` Pulse it
+to drop it for four seconds (GDD verb 7, "kills lasers").
 
 Frame stats print once per second: fps, ms, draw calls, quads.
 
-Levels are generated, not hand-placed yet — `tools/genlevels.py` describes `1-1` as grid
-operations (floors, arcs, Volt trails, enemy placements) and validates it against the
-authoring rules in the GDD (one spawn, one exit, ≤70 tiles between checkpoints) before
-emitting `src/levels.h`. This is a placeholder for the Tiled pipeline in
-[TECH_PLAN.md](docs/TECH_PLAN.md) §5, not the long-term tool — it exists because it got a
-level running the same day the physics did.
+Levels are generated, not hand-placed — `tools/genlevels.py` describes each one as grid
+operations (streets, stairs, Volt trails, enemy placements) and refuses to emit anything
+that fails validation. Beyond the GDD's authoring rules (one spawn, one exit, ≤70 tiles
+between checkpoints) it runs a **reachability flood fill** derived from the physics
+constants in `src/game.c`: it walks the level the way the player can, with the gate shut
+and again with it open, and fails the build if the exit, a checkpoint, a terminal, a relay
+node or an Echo cannot be stood next to. It also enforces a 4-tile minimum platform width.
+
+Both rules exist because the first pass of these levels was 70% unreachable — a fire escape
+whose first step was three tiles above a 2.6-tile jump — and no amount of reading the ASCII
+grid found it. Difficulty in this game is enemies; the geometry is meant to be easy, and
+the validator is what keeps it that way.
 
 ```sh
-python3 tools/genlevels.py    # regenerate src/levels.h after editing the level
+python3 tools/genlevels.py    # regenerate src/levels.h
+python3 tools/atlaspack.py    # regenerate the art atlas + src/atlas_city.h
+python3 tools/audiopack.py    # regenerate assets/audio (needs ffmpeg)
 ```
+
+## Audio
+
+Music and SFX are baked to 22050 Hz mono s16 WAV by `tools/audiopack.py` and mixed by
+`src/audio.c` against raw SDL2 — no decoder, no mixer library, so nothing extra has to
+cross-compile for the Vita. Eight one-shot voices and one looping track; the track follows
+the district and a Warden takes it over.
 
 ## The render pipeline
 

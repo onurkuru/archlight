@@ -1,9 +1,11 @@
 #include "font.h"
 #include <string.h>
 
-/* 3x5 glyphs, 0-9 then A-Z. bit2 = left column, bit0 = right column.
- * Carried over from Skyrift, which is the only thing in this project that is. */
-static const uint8_t FONT3X5[36][5] = {
+/* 3x5 glyphs, 0-9 then A-Z then punctuation. bit2 = left column, bit0 = right
+ * column. Carried over from Skyrift, which is the only thing in this project
+ * that is - the punctuation was added here, because story text without a full
+ * stop reads as a bug rather than as a style. */
+static const uint8_t FONT3X5[42][5] = {
     {7,5,5,5,7},{2,6,2,2,7},{7,1,7,4,7},{7,1,7,1,7},{5,5,7,1,1},
     {7,4,7,1,7},{7,4,7,5,7},{7,1,1,2,2},{7,5,7,5,7},{7,5,7,1,7},
     {2,5,7,5,5},{6,5,6,5,6},{3,4,4,4,3},{6,5,5,5,6},{7,4,7,4,7},
@@ -12,6 +14,8 @@ static const uint8_t FONT3X5[36][5] = {
     {7,5,7,4,4},{7,5,5,7,1},{7,5,6,5,5},{3,4,2,1,6},{7,2,2,2,2},
     {5,5,5,5,7},{5,5,5,5,2},{5,5,7,7,5},{5,5,2,5,5},{5,5,2,2,2},
     {7,1,2,4,7},
+    /* . , - : ' ! */
+    {0,0,0,0,2},{0,0,0,2,4},{0,0,7,0,0},{0,2,0,2,0},{2,2,0,0,0},{2,2,2,0,2},
 };
 
 /* One 4x6 cell per glyph, 16 per row: a 64x24 texture. */
@@ -28,7 +32,15 @@ static int glyph_index(char c)
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'A' && c <= 'Z') return c - 'A' + 10;
     if (c >= 'a' && c <= 'z') return c - 'a' + 10;
-    return -1;
+    switch (c) {
+        case '.':  return 36;
+        case ',':  return 37;
+        case '-':  return 38;
+        case ':':  return 39;
+        case '\'': return 40;
+        case '!':  return 41;
+        default:   return -1;
+    }
 }
 
 int font_init(void)
@@ -36,7 +48,7 @@ int font_init(void)
     static uint8_t px[TEX_W * TEX_H * 4];
     memset(px, 0, sizeof px);
 
-    for (int g = 0; g < 36; g++) {
+    for (int g = 0; g < 42; g++) {
         int cx = (g % COLS) * CELL_W, cy = (g / COLS) * CELL_H;
         for (int row = 0; row < 5; row++) {
             uint8_t bits = FONT3X5[g][row];

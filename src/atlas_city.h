@@ -3,22 +3,59 @@
 #define ARC_ATLAS_CITY_H
 
 #define ATLAS_CITY_W 1024
-#define ATLAS_CITY_H 584
+#define ATLAS_CITY_H 1497
 
 /* x, y, w, h in atlas pixels. */
 typedef struct { int x, y, w, h; } arc_rect;
 
-#define RECT_DRONE ((arc_rect){0, 532, 220, 52})
-#define RECT_NEAR_BUILDINGS ((arc_rect){0, 256, 493, 209})
-#define RECT_PLAYER_IDLE ((arc_rect){493, 256, 284, 67})
-#define RECT_PLAYER_JUMP ((arc_rect){568, 465, 355, 67})
-#define RECT_PLAYER_RUN ((arc_rect){0, 465, 568, 67})
-#define RECT_SKYLINE_A ((arc_rect){384, 0, 128, 240})
-#define RECT_SKYLINE_B ((arc_rect){512, 0, 128, 240})
-#define RECT_TILE_BAND ((arc_rect){236, 532, 16, 16})
-#define RECT_TILE_FILL ((arc_rect){252, 532, 16, 16})
-#define RECT_TILE_TOP ((arc_rect){220, 532, 16, 16})
-#define RECT_TILESET ((arc_rect){0, 0, 384, 256})
+#define RECT_BOOM ((arc_rect){476, 1419, 330, 52})
+#define RECT_BOSS_BOUNCER ((arc_rect){786, 1355, 96, 61})
+#define RECT_BOSS_CHORUS ((arc_rect){610, 1355, 176, 62})
+#define RECT_BOSS_COIL ((arc_rect){576, 961, 257, 104})
+#define RECT_BOSS_TIDE ((arc_rect){163, 1419, 93, 60})
+#define RECT_BOSS_WARDEN ((arc_rect){0, 1419, 163, 60})
+#define RECT_COLLECT_FX ((arc_rect){273, 1479, 60, 11})
+#define RECT_COP_IDLE ((arc_rect){664, 1288, 183, 64})
+#define RECT_COP_RUN ((arc_rect){0, 1355, 610, 64})
+#define RECT_CRATE_MID ((arc_rect){180, 1479, 16, 16})
+#define RECT_CRATE_TOP ((arc_rect){164, 1479, 16, 16})
+#define RECT_D2_BACK ((arc_rect){493, 752, 288, 192})
+#define RECT_D2_MID ((arc_rect){0, 961, 288, 192})
+#define RECT_D2_NEAR ((arc_rect){288, 961, 288, 192})
+#define RECT_D3_BACK ((arc_rect){0, 0, 112, 272})
+#define RECT_D3_MID ((arc_rect){112, 0, 256, 272})
+#define RECT_D4_BACK ((arc_rect){0, 272, 224, 240})
+#define RECT_D4_MID ((arc_rect){224, 272, 256, 240})
+#define RECT_D4_NEAR ((arc_rect){480, 272, 224, 240})
+#define RECT_D5_BACK ((arc_rect){704, 272, 320, 240})
+#define RECT_D5_MID ((arc_rect){0, 512, 320, 240})
+#define RECT_D5_NEAR ((arc_rect){320, 512, 320, 240})
+#define RECT_DRONE ((arc_rect){256, 1419, 220, 52})
+#define RECT_DROPDOOR ((arc_rect){616, 1288, 48, 64})
+#define RECT_ECHO ((arc_rect){0, 1479, 84, 18})
+#define RECT_NEAR_BUILDINGS ((arc_rect){0, 752, 493, 209})
+#define RECT_NODE ((arc_rect){0, 1153, 220, 68})
+#define RECT_PLAT_END ((arc_rect){212, 1479, 16, 14})
+#define RECT_PLAT_MID ((arc_rect){196, 1479, 16, 14})
+#define RECT_PLAYER_CLIMB ((arc_rect){142, 1288, 426, 67})
+#define RECT_PLAYER_CROUCH ((arc_rect){71, 1288, 71, 67})
+#define RECT_PLAYER_HURT ((arc_rect){0, 1288, 71, 67})
+#define RECT_PLAYER_IDLE ((arc_rect){220, 1153, 284, 67})
+#define RECT_PLAYER_JUMP ((arc_rect){568, 1221, 355, 67})
+#define RECT_PLAYER_RUN ((arc_rect){0, 1221, 568, 67})
+#define RECT_PLAYER_STRIKE ((arc_rect){923, 1221, 71, 67})
+#define RECT_ROAD_FILL ((arc_rect){148, 1479, 16, 16})
+#define RECT_ROAD_TOP ((arc_rect){132, 1479, 16, 16})
+#define RECT_SHUTTER ((arc_rect){568, 1288, 48, 64})
+#define RECT_SKYLINE_A ((arc_rect){752, 0, 128, 240})
+#define RECT_SKYLINE_B ((arc_rect){880, 0, 128, 240})
+#define RECT_TERMINAL ((arc_rect){806, 1419, 32, 30})
+#define RECT_TILE_BAND ((arc_rect){100, 1479, 16, 16})
+#define RECT_TILE_FILL ((arc_rect){116, 1479, 16, 16})
+#define RECT_TILE_TOP ((arc_rect){84, 1479, 16, 16})
+#define RECT_TILESET ((arc_rect){368, 0, 384, 256})
+#define RECT_TURRET ((arc_rect){838, 1419, 150, 23})
+#define RECT_VOLT ((arc_rect){228, 1479, 45, 11})
 
 #define PLAYER_FRAME_W 71
 #define PLAYER_FRAME_H 67
@@ -28,5 +65,39 @@ typedef struct { int x, y, w, h; } arc_rect;
 #define DRONE_FRAME_W 55
 #define DRONE_FRAME_H 52
 #define DRONE_FRAMES 4
+#define COP_FRAME_W 61
+#define COP_FRAME_H 64
+#define COP_IDLE_FRAMES 3
+#define COP_RUN_FRAMES 10
+#define ECHO_FRAME_W 21
+#define ECHO_FRAME_H 18
+#define ECHO_FRAMES 4
+#define VOLT_FRAME_W 15
+#define VOLT_FRAME_H 11
+#define VOLT_FRAMES 3
+#define CFX_FRAME_W 15
+#define CFX_FRAME_H 11
+#define CFX_FRAMES 4
+#define PLAYER_CLIMB_FRAMES 6
+#define WARDEN_W 163
+#define WARDEN_H 60
+#define BOUNCER_W 96
+#define BOUNCER_H 61
+#define COIL_W 257
+#define COIL_H 104
+#define TIDE_W 93
+#define TIDE_H 60
+#define CHORUS_FRAME_W 44
+#define CHORUS_FRAME_H 62
+#define CHORUS_FRAMES 4
+#define TURRET_FRAME_W 25
+#define TURRET_FRAME_H 23
+#define TURRET_FRAMES 6
+#define BOOM_FRAME_W 55
+#define BOOM_FRAME_H 52
+#define BOOM_FRAMES 6
+#define NODE_FRAME_W 55
+#define NODE_FRAME_H 68
+#define NODE_FRAMES 4
 
 #endif
