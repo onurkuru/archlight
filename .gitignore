@@ -1,0 +1,8 @@
+build/
+build-vita/
+art-src/
+*.bmp
+*.self
+*.velf
+*.vpk
+.DS_Store
