@@ -1,0 +1,871 @@
+#include "game.h"
+#include "font.h"
+#include "levels.h"
+
+#include <math.h>
+#include <stdio.h>
+#include <string.h>
+
+/* ---------------------------------------------------------------- tuning
+ * Units are internal pixels and seconds (see GDD §3.1). These numbers are the
+ * game; everything else is presentation. Change them here, nowhere else. */
+#define RUN_MAX        180.0f
+#define RUN_ACCEL     1400.0f
+#define RUN_FRICTION  1800.0f
+#define AIR_ACCEL      900.0f
+#define AIR_DRAG       260.0f
+
+#define GRAV          1300.0f
+#define GRAV_FALL     1700.0f
+#define FALL_MAX       520.0f
+#define JUMP_V         330.0f
+#define APEX_BAND       60.0f     /* |vy| under this counts as apex hang */
+#define APEX_GRAV_MUL    0.55f
+
+#define COYOTE           0.10f
+#define JUMP_BUFFER      0.13f
+
+#define WALL_SLIDE       90.0f
+#define WALL_JUMP_X     205.0f
+#define WALL_JUMP_Y    -300.0f
+#define WALL_STICK       0.12f    /* grace before you peel off a wall */
+
+#define DASH_SPEED     420.0f
+#define DASH_TIME        0.14f
+#define DASH_CD          0.22f
+
+#define STOMP_V        540.0f
+#define STOMP_LAUNCH   240.0f     /* height converted to forward speed */
+
+#define TETHER_RANGE   150.0f
+#define TETHER_BOOST     1.25f
+
+#define CHARGE_MAX     100.0f
+#define CHARGE_FLOOR    20.0f
+#define COST_DASH       20.0f
+#define COST_TETHER     15.0f
+
+/* ------------------------------------------------------------------ atlas */
+
+enum { CELL_SOLID = 0, CELL_GLOW = 1, CELL_STREAK = 2, CELL_TILE = 3 };
+#define ATLAS_PX 64.0f
+#define CELL_PX  32.0f
+
+static void cell_uv(int cell, float *u0, float *v0, float *u1, float *v1)
+{
+    int cx = cell & 1, cy = cell >> 1;
+    /* Inset by half a texel: at nearest filtering with a 2x upscale this is
+       the difference between clean edges and bleeding from the next cell. */
+    const float pad = 0.5f / ATLAS_PX;
+    *u0 = cx * CELL_PX / ATLAS_PX + pad;
+    *v0 = cy * CELL_PX / ATLAS_PX + pad;
+    *u1 = (cx + 1) * CELL_PX / ATLAS_PX - pad;
+    *v1 = (cy + 1) * CELL_PX / ATLAS_PX - pad;
+}
+
+void game_build_atlas(arc_texture *tex)
+{
+    static uint8_t px[64 * 64 * 4];
+    memset(px, 0, sizeof px);
+
+    for (int y = 0; y < 64; y++) {
+        for (int x = 0; x < 64; x++) {
+            uint8_t *p = &px[(y * 64 + x) * 4];
+            int lx = x & 31, ly = y & 31;
+            int cell = ((y >> 5) << 1) | (x >> 5);
+
+            if (cell == CELL_SOLID) {
+                p[0] = p[1] = p[2] = p[3] = 255;
+            } else if (cell == CELL_GLOW) {
+                float dx = (lx - 15.5f) / 15.5f, dy = (ly - 15.5f) / 15.5f;
+                float a = 1.0f - sqrtf(dx * dx + dy * dy);
+                a = a < 0 ? 0 : a * a * a;
+                p[0] = p[1] = p[2] = 255;
+                p[3] = (uint8_t)(a * 255.0f);
+            } else if (cell == CELL_STREAK) {
+                float a = 1.0f - fabsf((lx - 15.5f) / 4.0f);
+                a = (a < 0 ? 0 : a) * (0.35f + 0.65f * (ly / 31.0f));
+                p[0] = p[1] = p[2] = 255;
+                p[3] = (uint8_t)(a * 255.0f);
+            } else {
+                /* Grey-box tile: a lit top edge and a darker body, which is all
+                   the readability a collision test actually needs. */
+                int top = ly < 2;
+                int seam = (lx % 16 == 0) || (ly % 16 == 0);
+                p[3] = 255;
+                if (top)       { p[0] = 96;  p[1] = 116; p[2] = 168; }
+                else if (seam) { p[0] = 30;  p[1] = 34;  p[2] = 54;  }
+                else           { p[0] = 44;  p[1] = 50;  p[2] = 78;  }
+            }
+        }
+    }
+    gfx_texture_from_rgba(tex, px, 64, 64, 0);
+}
+
+/* ------------------------------------------------------------------ tiles */
+
+static char tile_at(const arc_world *w, int tx, int ty)
+{
+    if (tx < 0 || ty < 0 || tx >= w->w || ty >= w->h) return '.';
+    return w->rows[ty][tx];
+}
+
+int world_tile_solid(const arc_world *w, int tx, int ty)
+{
+    return tile_at(w, tx, ty) == '#';
+}
+
+static int tile_oneway(const arc_world *w, int tx, int ty)
+{
+    return tile_at(w, tx, ty) == '=';
+}
+
+/* ------------------------------------------------------------------ level */
+
+static uint32_t rgba(int r, int g, int b, int a)
+{
+    return (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16) | ((uint32_t)a << 24);
+}
+
+static void add_ent(arc_world *w, arc_ent_kind k, int tx, int ty)
+{
+    if (w->ent_count >= MAX_ENTS) return;
+    arc_ent *e = &w->ents[w->ent_count++];
+    e->kind = k;
+    e->x = tx * TILE + TILE * 0.5f;
+    e->y = ty * TILE + TILE * 0.5f;
+    e->taken = 0;
+    e->bob = (float)((tx * 37 + ty * 17) % 100) * 0.06f;
+}
+
+void world_load(arc_world *w, int index)
+{
+    const arc_level_def *d = &ARC_LEVELS[index % ARC_LEVEL_COUNT];
+
+    memset(w, 0, sizeof *w);
+    w->id = d->id; w->title = d->title;
+    w->w = d->w;   w->h = d->h;
+    w->rows = d->rows;
+
+    for (int ty = 0; ty < w->h; ty++) {
+        for (int tx = 0; tx < w->w; tx++) {
+            switch (d->rows[ty][tx]) {
+                case 'S': w->spawn_x = tx * TILE + 3.0f; w->spawn_y = ty * TILE; break;
+                case 'v': add_ent(w, E_VOLT,       tx, ty); w->volts_total++;  break;
+                case 'E': add_ent(w, E_ECHO,       tx, ty); w->echoes_total++; break;
+                case 'C': add_ent(w, E_CHECKPOINT, tx, ty); break;
+                case 'X': add_ent(w, E_EXIT,       tx, ty); break;
+                case 'A': add_ent(w, E_ANCHOR,     tx, ty); break;
+                case 'T': add_ent(w, E_HINT,       tx, ty); break;
+                case 'z':
+                    if (w->enemy_count < MAX_ENEMIES) {
+                        arc_enemy *en = &w->enemies[w->enemy_count++];
+                        memset(en, 0, sizeof *en);
+                        en->kind = EN_SCRAPPER;
+                        en->x = tx * TILE; en->y = ty * TILE - 8.0f;
+                        en->home_x = en->x;
+                        en->range = 3.0f * TILE;
+                        en->vx = 60.0f;
+                        en->alive = 1;
+                    }
+                    break;
+                default: break;
+            }
+        }
+    }
+
+    w->check_x = w->spawn_x;
+    w->check_y = w->spawn_y;
+    world_reset_to_checkpoint(w);
+    w->cam_x = w->p.x - ARC_W * 0.5f;
+    w->cam_y = w->p.y - ARC_H * 0.6f;
+}
+
+void world_reset_to_checkpoint(arc_world *w)
+{
+    arc_player *p = &w->p;
+    float charge = p->charge;
+
+    memset(p, 0, sizeof *p);
+    p->x = w->check_x; p->y = w->check_y;
+    p->w = 10.0f; p->h = 20.0f;
+    p->facing = 1;
+    p->state = PS_AIR;
+    p->plates = 3;
+    p->air_dash = 1;
+    /* Charge survives death: dying is a routing mistake, not a resource loss,
+       and taking the fuel away would punish the retry the game wants to be free. */
+    p->charge = charge > CHARGE_FLOOR ? charge : CHARGE_MAX * 0.5f;
+}
+
+/* -------------------------------------------------------------- collision */
+
+static int box_hits_solid(const arc_world *w, float x, float y, float bw, float bh)
+{
+    int tx0 = (int)floorf(x / TILE), tx1 = (int)floorf((x + bw - 0.001f) / TILE);
+    int ty0 = (int)floorf(y / TILE), ty1 = (int)floorf((y + bh - 0.001f) / TILE);
+    for (int ty = ty0; ty <= ty1; ty++)
+        for (int tx = tx0; tx <= tx1; tx++)
+            if (world_tile_solid(w, tx, ty)) return 1;
+    return 0;
+}
+
+static void move_x(arc_world *w, arc_player *p, float dx)
+{
+    p->x += dx;
+    if (!box_hits_solid(w, p->x, p->y, p->w, p->h)) return;
+
+    /* Step back to the tile boundary rather than integrating out - at dash
+       speed a per-pixel walk would cost 7 iterations a frame for nothing. */
+    if (dx > 0) p->x = floorf((p->x + p->w) / TILE) * TILE - p->w - 0.001f;
+    else        p->x = floorf(p->x / TILE) * TILE + TILE + 0.001f;
+    p->vx = 0;
+}
+
+static int move_y(arc_world *w, arc_player *p, float dy)
+{
+    float prev_bottom = p->y + p->h;
+    p->y += dy;
+
+    int landed = 0;
+    if (box_hits_solid(w, p->x, p->y, p->w, p->h)) {
+        if (dy > 0) { p->y = floorf((p->y + p->h) / TILE) * TILE - p->h - 0.001f; landed = 1; }
+        else        { p->y = floorf(p->y / TILE) * TILE + TILE + 0.001f; }
+        p->vy = 0;
+    } else if (dy > 0) {
+        /* One-way platforms: only solid when falling onto them from above. */
+        int ty = (int)floorf((p->y + p->h) / TILE);
+        int tx0 = (int)floorf(p->x / TILE), tx1 = (int)floorf((p->x + p->w - 0.001f) / TILE);
+        for (int tx = tx0; tx <= tx1; tx++) {
+            if (!tile_oneway(w, tx, ty)) continue;
+            float top = ty * TILE;
+            if (prev_bottom <= top + 1.0f) {
+                p->y = top - p->h - 0.001f;
+                p->vy = 0;
+                landed = 1;
+                break;
+            }
+        }
+    }
+    return landed;
+}
+
+static int on_ground(const arc_world *w, const arc_player *p)
+{
+    float y = p->y + p->h + 1.0f;
+    if (box_hits_solid(w, p->x, p->y + 1.0f, p->w, p->h)) return 1;
+
+    int ty = (int)floorf(y / TILE);
+    int tx0 = (int)floorf(p->x / TILE), tx1 = (int)floorf((p->x + p->w - 0.001f) / TILE);
+    for (int tx = tx0; tx <= tx1; tx++) {
+        if (world_tile_solid(w, tx, ty)) return 1;
+        if (tile_oneway(w, tx, ty) && (p->y + p->h) <= ty * TILE + 1.0f) return 1;
+    }
+    return 0;
+}
+
+static int wall_side(const arc_world *w, const arc_player *p)
+{
+    if (box_hits_solid(w, p->x - 1.5f, p->y + 2.0f, p->w, p->h - 4.0f)) return -1;
+    if (box_hits_solid(w, p->x + 1.5f, p->y + 2.0f, p->w, p->h - 4.0f)) return +1;
+    return 0;
+}
+
+/* ---------------------------------------------------------------- charge */
+
+static int spend(arc_player *p, float cost)
+{
+    if (p->charge < cost) return 0;
+    p->charge -= cost;
+    return 1;
+}
+
+static void gain(arc_player *p, float amount)
+{
+    p->charge += amount;
+    if (p->charge > CHARGE_MAX) p->charge = CHARGE_MAX;
+}
+
+/* ---------------------------------------------------------------- player */
+
+static void player_jump(arc_world *w, arc_player *p)
+{
+    (void)w;
+    p->vy = -JUMP_V;
+    p->state = PS_AIR;
+    p->coyote = 0;
+    p->jump_buffer = 0;
+    p->squash = -0.35f;
+}
+
+static void try_tether(arc_world *w, arc_player *p)
+{
+    /* Auto-target the best anchor in a forward cone. GDD open question 2 said
+       manual aiming at speed would be miserable on a Vita stick; it is. */
+    float best = TETHER_RANGE * TETHER_RANGE;
+    arc_ent *pick = NULL;
+    float cx = p->x + p->w * 0.5f, cy = p->y + p->h * 0.5f;
+
+    for (int i = 0; i < w->ent_count; i++) {
+        arc_ent *e = &w->ents[i];
+        if (e->kind != E_ANCHOR) continue;
+        float dx = e->x - cx, dy = e->y - cy;
+        if (dy > 8.0f) continue;                       /* anchors are overhead */
+        if (dx * p->facing < -24.0f) continue;         /* and ahead of you */
+        float d2 = dx * dx + dy * dy;
+        if (d2 < best) { best = d2; pick = e; }
+    }
+    if (!pick || !spend(p, COST_TETHER)) return;
+
+    p->tethered = 1;
+    p->tether_x = pick->x;
+    p->tether_y = pick->y;
+    p->tether_len = sqrtf(best);
+    p->state = PS_TETHER;
+}
+
+static void release_tether(arc_player *p)
+{
+    if (!p->tethered) return;
+    p->tethered = 0;
+    p->state = PS_AIR;
+    p->vx *= TETHER_BOOST;
+    p->vy *= TETHER_BOOST;
+}
+
+static void player_update(arc_world *w, arc_player *p, const arc_input *in, float dt)
+{
+    if (p->state == PS_DEAD) {
+        p->dead_time += dt;
+        if (p->dead_time > 0.45f) {
+            w->deaths++;
+            world_reset_to_checkpoint(w);
+        }
+        return;
+    }
+
+    if (p->invuln > 0) p->invuln -= dt;
+    if (p->dash_cd > 0) p->dash_cd -= dt;
+    if (p->squash < 0) p->squash += dt * 3.5f; else p->squash = 0;
+
+    int grounded = on_ground(w, p);
+    if (grounded) { p->coyote = COYOTE; p->air_dash = 1; }
+    else if (p->coyote > 0) p->coyote -= dt;
+
+    if (in->jump_edge) p->jump_buffer = JUMP_BUFFER;
+    else if (p->jump_buffer > 0) p->jump_buffer -= dt;
+
+    if (in->mx) p->facing = in->mx;
+
+    /* ---- dash: overrides everything while it lasts ---- */
+    if (p->state == PS_DASH) {
+        p->dash_time -= dt;
+        p->invuln = p->invuln > 0.02f ? p->invuln : 0.02f;
+        if (p->dash_time <= 0) {
+            p->state = grounded ? PS_GROUND : PS_AIR;
+            p->vx *= 0.55f;                      /* bleed, don't stop dead */
+            p->vy *= 0.35f;
+        }
+    } else if (in->dash_edge && p->dash_cd <= 0 &&
+               (grounded || p->air_dash) && spend(p, COST_DASH)) {
+        float dx = (float)in->mx, dy = 0.0f;
+        if (in->down) dy = 1.0f;
+        else if (in->jump && !grounded) dy = -1.0f;
+        if (dx == 0 && dy == 0) dx = (float)p->facing;
+        float len = sqrtf(dx * dx + dy * dy);
+        p->vx = dx / len * DASH_SPEED;
+        p->vy = dy / len * DASH_SPEED;
+        p->state = PS_DASH;
+        p->dash_time = DASH_TIME;
+        p->dash_cd = DASH_CD;
+        if (!grounded) p->air_dash = 0;
+        p->jump_buffer = 0;
+    }
+
+    /* ---- tether ---- */
+    if (in->tether_edge && !p->tethered && p->state != PS_DASH) try_tether(w, p);
+    if (p->tethered && (!in->tether || p->jump_buffer > 0)) release_tether(p);
+
+    if (p->tethered) {
+        p->vy += GRAV * dt;
+        /* Swing input adds tangential push, which is the whole feel of it. */
+        p->vx += in->mx * AIR_ACCEL * 0.5f * dt;
+
+        p->x += p->vx * dt;
+        p->y += p->vy * dt;
+
+        float cx = p->x + p->w * 0.5f, cy = p->y + p->h * 0.5f;
+        float dx = cx - p->tether_x, dy = cy - p->tether_y;
+        float d = sqrtf(dx * dx + dy * dy);
+        if (d > p->tether_len && d > 0.001f) {
+            float nx = dx / d, ny = dy / d;
+            p->x -= nx * (d - p->tether_len);
+            p->y -= ny * (d - p->tether_len);
+            float radial = p->vx * nx + p->vy * ny;      /* kill outward speed */
+            p->vx -= nx * radial;
+            p->vy -= ny * radial;
+        }
+        if (box_hits_solid(w, p->x, p->y, p->w, p->h)) release_tether(p);
+        gain(p, 6.0f * dt);
+        return;
+    }
+
+    /* ---- stomp ---- */
+    if (p->state != PS_DASH && !grounded && in->down && in->jump_edge) {
+        p->state = PS_STOMP;
+        p->vy = STOMP_V;
+        p->vx = 0;
+        p->jump_buffer = 0;
+    }
+
+    /* ---- wall ---- */
+    int wall = (!grounded && p->state != PS_DASH && p->state != PS_STOMP)
+             ? wall_side(w, p) : 0;
+    if (wall && p->vy > -10.0f && in->mx == wall) {
+        p->state = PS_WALL;
+        p->wall_dir = wall;
+        p->wall_stick = WALL_STICK;
+    } else if (p->state == PS_WALL) {
+        p->wall_stick -= dt;
+        if (p->wall_stick <= 0 || !wall) p->state = PS_AIR;
+    }
+
+    if (p->state == PS_WALL) {
+        if (p->vy > WALL_SLIDE) p->vy = WALL_SLIDE;
+        if (p->jump_buffer > 0) {
+            p->vx = -p->wall_dir * WALL_JUMP_X;
+            p->vy = WALL_JUMP_Y;
+            p->facing = -p->wall_dir;
+            p->state = PS_AIR;
+            p->jump_buffer = 0;
+            p->wall_stick = 0;
+            gain(p, 5.0f);
+        }
+    }
+
+    /* ---- ordinary jump ---- */
+    if (p->state != PS_DASH && p->state != PS_STOMP && p->state != PS_WALL &&
+        p->jump_buffer > 0 && p->coyote > 0) {
+        player_jump(w, p);
+    }
+    /* Variable height: releasing jump on the way up cuts the arc. */
+    if (!in->jump && p->vy < 0 && p->state == PS_AIR) p->vy += GRAV * 1.6f * dt;
+
+    /* ---- horizontal ---- */
+    if (p->state != PS_DASH && p->state != PS_STOMP) {
+        float accel = grounded ? RUN_ACCEL : AIR_ACCEL;
+        if (in->mx) {
+            p->vx += in->mx * accel * dt;
+            if (p->vx > RUN_MAX && in->mx > 0 && grounded) p->vx = RUN_MAX;
+            if (p->vx < -RUN_MAX && in->mx < 0 && grounded) p->vx = -RUN_MAX;
+        } else {
+            float drag = (grounded ? RUN_FRICTION : AIR_DRAG) * dt;
+            if (fabsf(p->vx) <= drag) p->vx = 0;
+            else p->vx -= drag * (p->vx > 0 ? 1.0f : -1.0f);
+        }
+    }
+
+    /* ---- gravity ---- */
+    if (p->state != PS_DASH) {
+        float g = p->vy < 0 ? GRAV : GRAV_FALL;
+        if (fabsf(p->vy) < APEX_BAND && p->state == PS_AIR) {
+            g *= APEX_GRAV_MUL;                  /* the apex hang */
+            p->apex += dt;
+        } else p->apex = 0;
+        if (p->state == PS_STOMP) g = 0;         /* stomp falls at a fixed rate */
+        p->vy += g * dt;
+        if (p->vy > FALL_MAX && p->state != PS_STOMP) p->vy = FALL_MAX;
+    }
+
+    /* ---- integrate ---- */
+    move_x(w, p, p->vx * dt);
+    int landed = move_y(w, p, p->vy * dt);
+
+    if (landed) {
+        if (p->state == PS_STOMP) {
+            /* Height becomes forward speed - the reason to stomp is to go
+               faster afterwards, not to hit something. */
+            p->vx = p->facing * STOMP_LAUNCH;
+            p->squash = -0.7f;
+            w->shake = 0.12f;
+            gain(p, 10.0f);
+        } else if (p->apex > 0.0f) {
+            gain(p, 12.0f);                      /* perfect landing */
+            p->squash = -0.3f;
+        } else {
+            p->squash = -0.2f;
+        }
+        p->state = PS_GROUND;
+        p->apex = 0;
+    } else if (p->state == PS_GROUND && !on_ground(w, p)) {
+        p->state = PS_AIR;
+    }
+
+    /* ---- flow economy ---- */
+    float speed = fabsf(p->vx);
+    if (speed >= RUN_MAX * 0.8f) {
+        gain(p, 8.0f * dt);
+        w->flow += dt;
+    } else if (speed < 8.0f && grounded) {
+        p->charge -= 4.0f * dt;
+        if (p->charge < CHARGE_FLOOR) p->charge = CHARGE_FLOOR;
+        w->flow = 0;
+    }
+
+    /* ---- out of the world ---- */
+    if (p->y > w->h * TILE + 48.0f) {
+        p->state = PS_DEAD;
+        p->dead_time = 0;
+    }
+}
+
+/* ----------------------------------------------------------------- enemies
+ * Most of the roster is a bounce target, not a fight - see GDD §5. A
+ * Scrapper turns at the edge of its patrol range or at a wall/ledge, and
+ * dies to Dash or Stomp; touching it any other way costs a plate. */
+
+#define ENEMY_W 12.0f
+#define ENEMY_H 12.0f
+
+static int enemy_ledge_ahead(const arc_world *w, const arc_enemy *en)
+{
+    float fx = en->x + (en->vx > 0 ? ENEMY_H : -2.0f);
+    return !world_tile_solid(w, (int)(fx / TILE), (int)((en->y + ENEMY_H + 1.0f) / TILE));
+}
+
+static void enemies_update(arc_world *w, float dt)
+{
+    arc_player *p = &w->p;
+    float pcx = p->x + p->w * 0.5f, pcy = p->y + p->h * 0.5f;
+
+    for (int i = 0; i < w->enemy_count; i++) {
+        arc_enemy *en = &w->enemies[i];
+        if (en->hit_flash > 0) en->hit_flash -= dt;
+        if (en->squash < 0) en->squash += dt * 4.0f; else en->squash = 0;
+        if (!en->alive) continue;
+
+        if (box_hits_solid(w, en->x + (en->vx > 0 ? ENEMY_W : -1.0f), en->y + 2.0f, 1.0f, ENEMY_H - 4.0f) ||
+            enemy_ledge_ahead(w, en) ||
+            fabsf(en->x - en->home_x) > en->range) {
+            en->vx = -en->vx;
+        }
+        en->x += en->vx * dt;
+
+        float dx = (en->x + ENEMY_W * 0.5f) - pcx, dy = (en->y + ENEMY_H * 0.5f) - pcy;
+        int overlap = fabsf(dx) < (ENEMY_W + p->w) * 0.42f &&
+                     fabsf(dy) < (ENEMY_H + p->h) * 0.42f;
+        if (!overlap) continue;
+
+        int player_wins = p->state == PS_DASH || p->state == PS_STOMP ||
+                          (p->state == PS_AIR && p->vy > 40.0f && pcy < en->y);
+        if (player_wins) {
+            en->alive = 0;
+            en->squash = -0.6f;
+            gain(p, 8.0f);
+            if (p->state == PS_STOMP) { p->vy = -STOMP_V * 0.55f; p->state = PS_AIR; }
+        } else if (p->invuln <= 0 && p->state != PS_DEAD) {
+            p->plates--;
+            p->invuln = 1.0f;
+            p->vx = (pcx < en->x + ENEMY_W * 0.5f ? -1.0f : 1.0f) * 160.0f;
+            p->vy = -180.0f;
+            w->shake = 0.15f;
+            w->hitstop = 0.05f;
+            if (p->plates <= 0) { p->state = PS_DEAD; p->dead_time = 0; }
+        }
+    }
+}
+
+/* --------------------------------------------------------------- entities */
+
+static void collect(arc_world *w, arc_player *p, float dt)
+{
+    float cx = p->x + p->w * 0.5f, cy = p->y + p->h * 0.5f;
+
+    for (int i = 0; i < w->ent_count; i++) {
+        arc_ent *e = &w->ents[i];
+        e->bob += dt * 3.0f;
+        if (e->taken) continue;
+
+        float dx = e->x - cx, dy = e->y - cy;
+        float d2 = dx * dx + dy * dy;
+
+        switch (e->kind) {
+            case E_VOLT:
+                /* Magnet radius: collecting should feel like the level is
+                   coming to you, not like a pixel-perfect pickup test. */
+                if (d2 < 26.0f * 26.0f) {
+                    e->x -= dx * fminf(dt * 9.0f, 1.0f);
+                    e->y -= dy * fminf(dt * 9.0f, 1.0f);
+                }
+                if (d2 < 10.0f * 10.0f) { e->taken = 1; w->volts++; gain(p, 2.0f); }
+                break;
+            case E_ECHO:
+                if (d2 < 14.0f * 14.0f) { e->taken = 1; w->echoes++; gain(p, 20.0f); }
+                break;
+            case E_CHECKPOINT:
+                if (d2 < 18.0f * 18.0f && (w->check_x != e->x || w->check_y != e->y - 8.0f)) {
+                    e->taken = 1;                /* drawn lit from now on */
+                    w->check_x = e->x - 5.0f;
+                    w->check_y = e->y - 8.0f;
+                }
+                break;
+            case E_EXIT:
+                if (d2 < 16.0f * 16.0f) w->finished = 1;
+                break;
+            default: break;
+        }
+    }
+}
+
+/* ----------------------------------------------------------------- camera */
+
+static void camera_update(arc_world *w, float dt)
+{
+    arc_player *p = &w->p;
+
+    /* Look-ahead in the direction of travel, scaled by speed: the camera shows
+       you where you are going, not where you are. */
+    float lead = (p->vx / RUN_MAX) * 52.0f;
+    float tx = p->x + p->w * 0.5f + lead - ARC_W * 0.5f;
+    float ty = p->y + p->h * 0.5f - ARC_H * 0.55f;
+
+    float k = 1.0f - expf(-dt / 0.18f);
+    w->cam_x += (tx - w->cam_x) * k;
+    w->cam_y += (ty - w->cam_y) * k * 1.4f;
+
+    float max_x = (float)(w->w * TILE - ARC_W);
+    float max_y = (float)(w->h * TILE - ARC_H);
+    if (w->cam_x < 0) w->cam_x = 0;
+    if (w->cam_y < 0) w->cam_y = 0;
+    if (w->cam_x > max_x) w->cam_x = max_x;
+    if (w->cam_y > max_y) w->cam_y = max_y;
+}
+
+/* ----------------------------------------------------------------- update */
+
+void world_update(arc_world *w, const arc_input *in, float dt)
+{
+    if (w->hitstop > 0) { w->hitstop -= dt; return; }
+    if (w->finished) return;
+
+    w->time += dt;
+    if (w->shake > 0) w->shake -= dt;
+
+    player_update(w, &w->p, in, dt);
+    enemies_update(w, dt);
+    collect(w, &w->p, dt);
+    camera_update(w, dt);
+}
+
+/* ----------------------------------------------------------------- render */
+
+static void quad(float x, float y, float w, float h, int cell, uint32_t col)
+{
+    float u0, v0, u1, v1;
+    cell_uv(cell, &u0, &v0, &u1, &v1);
+    gfx_batch_quad(x, y, w, h, u0, v0, u1, v1, col);
+}
+
+static void draw_tiles(arc_world *w)
+{
+    int tx0 = (int)(w->cam_x / TILE) - 1, tx1 = tx0 + ARC_W / TILE + 3;
+    int ty0 = (int)(w->cam_y / TILE) - 1, ty1 = ty0 + ARC_H / TILE + 3;
+
+    for (int ty = ty0; ty <= ty1; ty++) {
+        for (int tx = tx0; tx <= tx1; tx++) {
+            char c = tile_at(w, tx, ty);
+            float x = tx * TILE - w->cam_x, y = ty * TILE - w->cam_y;
+            if (c == '#') {
+                /* Fade with depth into the frame so the ground reads as a
+                   surface rather than a wall of identical squares. */
+                int lit = !world_tile_solid(w, tx, ty - 1);
+                quad(x, y, TILE, TILE, CELL_TILE,
+                     lit ? rgba(255, 255, 255, 255) : rgba(150, 150, 165, 255));
+            } else if (c == '=') {
+                quad(x, y, TILE, 4, CELL_SOLID, rgba(120, 190, 230, 220));
+            }
+        }
+    }
+}
+
+static void draw_player(arc_world *w)
+{
+    arc_player *p = &w->p;
+    if (p->state == PS_DEAD) return;
+
+    float sq = p->squash;
+    float h = p->h * (1.0f + sq * 0.6f);
+    float bw = p->w * (1.0f - sq * 0.5f);
+    float x = p->x + (p->w - bw) * 0.5f - w->cam_x;
+    float y = p->y + (p->h - h) - w->cam_y;
+
+    uint32_t col = rgba(236, 244, 255, 255);
+    if (p->state == PS_DASH)  col = rgba(120, 250, 255, 255);
+    if (p->state == PS_STOMP) col = rgba(255, 190, 120, 255);
+    if (p->invuln > 0 && fmodf(w->time * 20.0f, 2.0f) < 1.0f) col = rgba(255, 90, 120, 255);
+
+    quad(x, y, bw, h, CELL_SOLID, col);
+
+    /* Visor: the only feature Nine has, and the thing that reads at 32 px. */
+    quad(x + (p->facing > 0 ? bw - 5 : 1), y + 3, 4, 3, CELL_SOLID,
+         rgba(90, 240, 255, 255));
+}
+
+static void draw_enemies(arc_world *w, int additive)
+{
+    for (int i = 0; i < w->enemy_count; i++) {
+        arc_enemy *en = &w->enemies[i];
+        if (!en->alive && en->squash == 0) continue;
+
+        float x = en->x - w->cam_x, y = en->y - w->cam_y;
+        if (x < -40 || x > ARC_W + 40) continue;
+
+        float h = ENEMY_H * (1.0f + en->squash * 0.7f);
+        float bw = ENEMY_W * (1.0f - en->squash * 0.5f);
+        y += ENEMY_H - h;
+
+        if (additive) {
+            if (en->hit_flash > 0)
+                quad(x - 6, y - 6, bw + 12, h + 12, CELL_GLOW, rgba(255, 200, 120, 180));
+        } else {
+            uint32_t col = en->hit_flash > 0 ? rgba(255, 240, 220, 255) : rgba(220, 90, 70, 255);
+            quad(x, y, bw, h, CELL_SOLID, col);
+            quad(x + (en->vx >= 0 ? bw - 4 : 1), y + 2, 3, 3, CELL_SOLID, rgba(20, 10, 10, 255));
+        }
+    }
+}
+
+static void draw_ents(arc_world *w, int additive)
+{
+    for (int i = 0; i < w->ent_count; i++) {
+        arc_ent *e = &w->ents[i];
+        float x = e->x - w->cam_x, y = e->y - w->cam_y;
+        if (x < -40 || x > ARC_W + 40 || y < -40 || y > ARC_H + 40) continue;
+
+        float bob = sinf(e->bob) * 1.5f;
+
+        switch (e->kind) {
+            case E_VOLT:
+                if (e->taken) break;
+                if (additive) quad(x - 7, y - 7 + bob, 14, 14, CELL_GLOW, rgba(120, 230, 255, 150));
+                else          quad(x - 1.5f, y - 2.5f + bob, 3, 5, CELL_SOLID, rgba(200, 250, 255, 255));
+                break;
+            case E_ECHO:
+                if (e->taken) break;
+                if (additive) quad(x - 20, y - 20 + bob, 40, 40, CELL_GLOW, rgba(255, 120, 220, 170));
+                else          quad(x - 4, y - 5 + bob, 8, 10, CELL_SOLID, rgba(255, 190, 240, 255));
+                break;
+            case E_CHECKPOINT: {
+                uint32_t c = e->taken ? rgba(90, 255, 170, 255) : rgba(90, 100, 130, 255);
+                if (additive) {
+                    if (e->taken) quad(x - 16, y - 24, 32, 48, CELL_GLOW, rgba(90, 255, 170, 110));
+                } else {
+                    quad(x - 1, y - 12, 2, 24, CELL_SOLID, c);
+                    quad(x - 5, y - 12, 10, 5, CELL_SOLID, c);
+                }
+                break;
+            }
+            case E_EXIT:
+                if (additive) quad(x - 26, y - 34, 52, 68, CELL_GLOW, rgba(255, 220, 130, 130));
+                else          quad(x - 7, y - 20, 14, 28, CELL_SOLID, rgba(255, 230, 160, 255));
+                break;
+            case E_ANCHOR:
+                if (additive) quad(x - 12, y - 12, 24, 24, CELL_GLOW, rgba(255, 170, 90, 140));
+                else          quad(x - 3, y - 3, 6, 6, CELL_SOLID, rgba(255, 200, 120, 255));
+                break;
+            default: break;
+        }
+    }
+}
+
+static void draw_hud(arc_world *w)
+{
+    char buf[64];
+    arc_player *p = &w->p;
+
+    snprintf(buf, sizeof buf, "VOLTS %d OF %d", w->volts, w->volts_total);
+    font_text(8, 8, 1, rgba(190, 210, 235, 220), buf);
+
+    snprintf(buf, sizeof buf, "ECHOES %d OF %d", w->echoes, w->echoes_total);
+    font_text(8, 16, 1, rgba(255, 150, 220, 220), buf);
+
+    snprintf(buf, sizeof buf, "CHARGE %d", (int)p->charge);
+    font_text(8, 24, 1, p->charge > 40.0f ? rgba(120, 230, 255, 220)
+                                          : rgba(255, 140, 120, 230), buf);
+
+    snprintf(buf, sizeof buf, "TIME %d", (int)w->time);
+    font_text(ARC_W - font_width(1, buf) - 8, 8, 1, rgba(190, 210, 235, 200), buf);
+
+    if (w->flow > 1.0f) {
+        snprintf(buf, sizeof buf, "FLOW %d", (int)w->flow);
+        font_text(ARC_W - font_width(1, buf) - 8, 16, 1, rgba(255, 220, 130, 230), buf);
+    }
+
+    if (w->finished) {
+        const char *t = "DELIVERED";
+        font_text((ARC_W - font_width(3, t)) * 0.5f, ARC_H * 0.4f, 3,
+                  rgba(255, 245, 220, 255), t);
+        snprintf(buf, sizeof buf, "TIME %d DEATHS %d", (int)w->time, w->deaths);
+        font_text((ARC_W - font_width(1, buf)) * 0.5f, ARC_H * 0.4f + 24, 1,
+                  rgba(200, 220, 240, 230), buf);
+    }
+}
+
+static void draw_plates(arc_world *w)
+{
+    /* Three ticks, not a bar - damage state should be legible at a glance and
+       never need a number (GDD §3.2). Screen space, drawn in the atlas batch. */
+    for (int i = 0; i < 3; i++) {
+        uint32_t col = i < w->p.plates ? rgba(230, 240, 255, 230) : rgba(60, 66, 84, 150);
+        quad((float)(ARC_W - 14 - i * 8), 24.0f, 6.0f, 6.0f, CELL_SOLID, col);
+    }
+}
+
+static void draw_hints(arc_world *w)
+{
+    /* In-world tutorial text, per the GDD's "teach in safety" rule: it lives
+       where the mechanic is first free to try, and is never repeated. */
+    static const char *HINTS[] = { "ARROWS RUN   Z JUMP   X DASH   C TETHER" };
+
+    for (int i = 0; i < w->ent_count; i++) {
+        arc_ent *e = &w->ents[i];
+        if (e->kind != E_HINT) continue;
+        float x = e->x - w->cam_x, y = e->y - w->cam_y;
+        if (x < -200 || x > ARC_W + 200) continue;
+        font_text(x - font_width(1, HINTS[0]) * 0.5f, y, 1,
+                  rgba(150, 175, 205, 200), HINTS[0]);
+    }
+}
+
+void world_render(arc_world *w, const arc_texture *atlas, const arc_shader *sprite)
+{
+    /* Alpha layer: tiles, solid entity bodies, the player. */
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    gfx_batch_begin(sprite, atlas, ARC_W, ARC_H);
+    draw_tiles(w);
+    draw_ents(w, 0);
+    draw_enemies(w, 0);
+    draw_player(w);
+    draw_plates(w);
+    gfx_batch_end();
+
+    /* Additive layer: every glow in the frame, in one draw call. */
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    gfx_batch_begin(sprite, atlas, ARC_W, ARC_H);
+    draw_ents(w, 1);
+    draw_enemies(w, 1);
+    if (w->p.state != PS_DEAD) {
+        arc_player *p = &w->p;
+        float g = 30.0f + p->charge * 0.35f;
+        quad(p->x + p->w * 0.5f - g - w->cam_x, p->y + p->h * 0.5f - g - w->cam_y,
+             g * 2, g * 2, CELL_GLOW, rgba(90, 190, 255, 70));
+    }
+    gfx_batch_end();
+
+    /* Text last, alpha, on its own texture. */
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    gfx_batch_begin(sprite, font_texture(), ARC_W, ARC_H);
+    draw_hints(w);
+    draw_hud(w);
+    gfx_batch_end();
+}

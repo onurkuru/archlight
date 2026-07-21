@@ -175,9 +175,9 @@ self-verified without hardware in the loop.
 
 | M | Name | Duration | Exit criteria |
 | --- | --- | --- | --- |
-| **M0** | **vitaGL spike** | 1 week | *(in progress — see §10)* Full post stack at 480×272 with 1500 sprites, running on real hardware at ≥60 fps. **Go/no-go for the whole render plan.** |
-| **M1** | Engine core | 3 weeks | Sprite batcher, atlases, camera, tilemap, fixed-timestep loop, input, desktop+Vita parity |
-| **M2** | Movement vertical slice | 3 weeks | All 7 verbs, tuned, in one grey-box level. **Playtest gate: is running around a bare room already fun?** If no, stop and re-tune. |
+| **M0** | **vitaGL spike** | 1 week | *(builds on hardware, unrun — see §10)* Full post stack at 480×272, ≥60 fps. **Go/no-go for the whole render plan.** |
+| **M1** | Engine core | 3 weeks | *(done, desktop-verified — see §10)* Sprite batcher, atlases, camera, tilemap, fixed-timestep loop, input, desktop+Vita parity |
+| **M2** | Movement vertical slice | 3 weeks | *(done, desktop-verified — see §10)* All 7 verbs in one grey-box level, one enemy archetype. **Playtest gate: is running around a bare room already fun?** — open; needs a human at the controls, not a screenshot. |
 | **M3** | The look | 3 weeks | Full post stack: light, bloom, reflections, LUT, rain, fog. One district's first 30 s at final visual quality. |
 | **M4** | Tools | 2 weeks | Tiled pipeline + validator + atlas packer end-to-end |
 | **M5** | Systems | 3 weeks | Enemies, collectibles, Charge, checkpoints, HUD, results screen, save |
@@ -207,9 +207,13 @@ tooling must be genuinely fast before M6 starts.
 
 ## 9. Immediate Next Steps
 
-1. Run `arclight.vpk` on hardware and read the frame stats — the actual M0 verdict.
-2. Buy/collect the asset packs, fill in the licence audit in [ASSETS.md](ASSETS.md).
-3. Grey-box `1-1` in Tiled.
+1. Play `1-1` (keyboard or VPK on hardware) and get the M2 playtest verdict — the one gate
+   nothing in this plan can substitute for.
+2. Read the frame stats on real hardware — the actual M0 verdict.
+3. Buy/collect the asset packs, fill in the licence audit in [ASSETS.md](ASSETS.md).
+4. Move level authoring from `tools/genlevels.py`'s grid ops to Tiled once the grey-box
+   verb feel is confirmed — the generator was the fastest way to a playable 1-1, not the
+   long-term pipeline.
 
 ---
 
@@ -236,5 +240,27 @@ tooling must be genuinely fast before M6 starts.
 **8**. Draw calls are decided by layer order, not by sprite count — the batcher cannot
 save a renderer that changes state mid-list.
 
-**Still unknown:** everything that matters. Nothing has run on a Vita yet, so the fill-rate
-question the spike exists to answer is still open.
+**Also done (2026-07-21, same day):** M1 and M2 pulled forward, because nothing in them
+depended on the still-open fill-rate question.
+
+- `src/game.c` / `src/game.h`: tile collision (solid + one-way platforms), all 7 verbs from
+  GDD §3.1 (run, jump w/ coyote+buffer+variable height+apex hang, wall run/jump, arc dash
+  8-way, stomp with height→speed conversion, auto-targeting tether, pulse not yet wired to
+  anything since Act I has no hackable prop yet), the Charge economy exactly as specced,
+  3-plate health, checkpoints, Volts/Echoes collection with magnet radius, a look-ahead
+  camera, and one enemy archetype (Scrapper: patrols, turns at ledges/walls, dies to
+  dash/stomp/pounce, costs a plate on contact otherwise).
+- `tools/genlevels.py`: a grid-ops level generator standing in for the Tiled pipeline — not
+  the long-term tool, but it let `1-1` exist same-day, and it already **caught a real
+  authoring bug**: an early cut of the level had a 97-tile gap between checkpoints against
+  the 20-second/~70-tile rule. That's the validator earning its place before M4 exists.
+- `1-1` ("THE GUTTER"), 210×24 tiles, teaches every verb in GDD order, checked by screenshot
+  at five points along its length (start, staircase, wall-jump shaft, dash gap, tether
+  run) plus an 8-second soak run — no crashes, physics resolves correctly in every section.
+- Real gameplay content (270 quads, 7 draw calls, ~0.5 ms) is far cheaper than M0's
+  synthetic 1500-sprite stress case — a good sign for the fill-rate question, not an
+  answer to it.
+
+**Still unknown:** the fill-rate question itself (needs real hardware), and the only
+question that was never going to be answerable from a screenshot — **does it feel good to
+move**. That is what M2's playtest gate is for, and it is still open.

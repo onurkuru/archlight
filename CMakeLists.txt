@@ -12,11 +12,10 @@ endif()
 project(arclight C)
 set(CMAKE_C_STANDARD 11)
 
-set(SOURCES src/main.c src/gfx.c)
+set(SOURCES src/main.c src/gfx.c src/game.c src/font.c)
 
-# GLSL sources plus any precompiled .gxp binaries that have been baked in
-# (see docs/TECH_PLAN.md §1 - a released VPK should ship the binaries so
-# players never need libshacccg.suprx). Re-run cmake after adding one.
+# GLSL sources, plus any precompiled .gxp binaries that have been baked in
+# for boot time (see docs/TECH_PLAN.md §1). Re-run cmake after adding one.
 file(GLOB SHADER_PATHS RELATIVE ${CMAKE_SOURCE_DIR}/shaders
      ${CMAKE_SOURCE_DIR}/shaders/*.vert
      ${CMAKE_SOURCE_DIR}/shaders/*.frag
