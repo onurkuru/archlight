@@ -76,7 +76,7 @@ static void pass_blur(arc_target *src, arc_target *dst, float dx, float dy)
     gfx_fullscreen();
 }
 
-static void pass_composite(int post_on)
+static void pass_composite(int post_on, float t)
 {
     gfx_target_bind(NULL);
     glViewport(0, 0, SCREEN_W, SCREEN_H);
@@ -90,6 +90,8 @@ static void pass_composite(int post_on)
                 post_on ? 0.55f  : 0.0f,
                 post_on ? 0.16f  : 0.0f,
                 post_on ? 0.010f : 0.0f);
+    if (sh_composite.u_dir >= 0)
+        glUniform4f(sh_composite.u_dir, t, post_on ? 1.0f : 0.0f, 0, 0);
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, rt_scene.tex);
@@ -285,7 +287,7 @@ int main(int argc, char **argv)
             pass_blur(&rt_bloom_b, &rt_bloom_a, 0.0f, 1.0f);
             glEnable(GL_BLEND);
         }
-        pass_composite(post_on);
+        pass_composite(post_on, world.time);
 
         if (env_shot && frames == shot_frame) { dump_frame(env_shot); running = 0; }
 

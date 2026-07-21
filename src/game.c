@@ -46,6 +46,14 @@
 #define COST_DASH       20.0f
 #define COST_TETHER     15.0f
 
+/* The camera zoom: world is rendered 2x into the 480x272 internal buffer, so
+ * the visible window is 240x136 world px (15x8.5 tiles) and every source
+ * pixel lands on exactly 2 internal / 4 screen pixels - crisp, and close
+ * enough that Nine reads as a character instead of a speck. */
+#define ZOOM   2.0f
+#define VIEW_W (ARC_W / 2)
+#define VIEW_H (ARC_H / 2)
+
 /* ------------------------------------------------------------------ atlas */
 
 enum { CELL_SOLID = 0, CELL_GLOW = 1, CELL_STREAK = 2, CELL_TILE = 3 };
@@ -163,7 +171,7 @@ void world_load(arc_world *w, int index)
                         arc_enemy *en = &w->enemies[w->enemy_count++];
                         memset(en, 0, sizeof *en);
                         en->kind = EN_SCRAPPER;
-                        en->x = tx * TILE; en->y = ty * TILE - 8.0f;
+                        en->x = tx * TILE; en->y = ty * TILE;
                         en->home_x = en->x;
                         en->range = 3.0f * TILE;
                         en->vx = 60.0f;
@@ -197,6 +205,13 @@ void world_reset_to_checkpoint(arc_world *w)
     /* Charge survives death: dying is a routing mistake, not a resource loss,
        and taking the fuel away would punish the retry the game wants to be free. */
     p->charge = charge > CHARGE_FLOOR ? charge : CHARGE_MAX * 0.5f;
+
+    /* Popcorn enemies respawn with the player - a flow game's obstacles are
+       part of the route, and a cleared route retried is a different level. */
+    for (int i = 0; i < w->enemy_count; i++) {
+        w->enemies[i].alive = 1;
+        w->enemies[i].x = w->enemies[i].home_x;
+    }
 }
 
 /* -------------------------------------------------------------- collision */
@@ -233,8 +248,10 @@ static int move_y(arc_world *w, arc_player *p, float dy)
         if (dy > 0) { p->y = floorf((p->y + p->h) / TILE) * TILE - p->h - 0.001f; landed = 1; }
         else        { p->y = floorf(p->y / TILE) * TILE + TILE + 0.001f; }
         p->vy = 0;
-    } else if (dy > 0) {
-        /* One-way platforms: only solid when falling onto them from above. */
+    } else if (dy > 0 && p->state != PS_STOMP) {
+        /* One-way platforms: only solid when falling onto them from above,
+           and never during a Stomp - smashing down through a grating is the
+           whole reason the verb exists (GDD §3.1). */
         int ty = (int)floorf((p->y + p->h) / TILE);
         int tx0 = (int)floorf(p->x / TILE), tx1 = (int)floorf((p->x + p->w - 0.001f) / TILE);
         for (int tx = tx0; tx <= tx1; tx++) {
@@ -412,8 +429,17 @@ static void player_update(arc_world *w, arc_player *p, const arc_input *in, floa
         return;
     }
 
-    /* ---- stomp ---- */
-    if (p->state != PS_DASH && !grounded && in->down && in->jump_edge) {
+    /* ---- stomp ----
+       Also startable while standing on a one-way, so "down + jump" drops you
+       through a grating instead of doing nothing. */
+    int on_oneway = 0;
+    {
+        int ty = (int)floorf((p->y + p->h + 1.0f) / TILE);
+        int tx0 = (int)floorf(p->x / TILE), tx1 = (int)floorf((p->x + p->w - 0.001f) / TILE);
+        for (int tx = tx0; tx <= tx1 && !on_oneway; tx++)
+            if (tile_oneway(w, tx, ty)) on_oneway = 1;
+    }
+    if (p->state != PS_DASH && (!grounded || on_oneway) && in->down && in->jump_edge) {
         p->state = PS_STOMP;
         p->vy = STOMP_V;
         p->vx = 0;
@@ -535,17 +561,14 @@ static void player_update(arc_world *w, arc_player *p, const arc_input *in, floa
 
 /* ----------------------------------------------------------------- enemies
  * Most of the roster is a bounce target, not a fight - see GDD §5. A
- * Scrapper turns at the edge of its patrol range or at a wall/ledge, and
- * dies to Dash or Stomp; touching it any other way costs a plate. */
+ * Scrapper is a hovering drone: it patrols its range in the air, turns at
+ * walls, and dies to Dash, Stomp or a falling bounce; touching it any other
+ * way costs a plate. */
 
-#define ENEMY_W 12.0f
-#define ENEMY_H 12.0f
-
-static int enemy_ledge_ahead(const arc_world *w, const arc_enemy *en)
-{
-    float fx = en->x + (en->vx > 0 ? ENEMY_H : -2.0f);
-    return !world_tile_solid(w, (int)(fx / TILE), (int)((en->y + ENEMY_H + 1.0f) / TILE));
-}
+/* Hitbox roughly matches the drawn drone (27x26 world px). A hitbox much
+ * smaller than the sprite reads as the game cheating. */
+#define ENEMY_W 22.0f
+#define ENEMY_H 20.0f
 
 static void enemies_update(arc_world *w, float dt)
 {
@@ -559,7 +582,6 @@ static void enemies_update(arc_world *w, float dt)
         if (!en->alive) continue;
 
         if (box_hits_solid(w, en->x + (en->vx > 0 ? ENEMY_W : -1.0f), en->y + 2.0f, 1.0f, ENEMY_H - 4.0f) ||
-            enemy_ledge_ahead(w, en) ||
             fabsf(en->x - en->home_x) > en->range) {
             en->vx = -en->vx;
         }
@@ -639,16 +661,16 @@ static void camera_update(arc_world *w, float dt)
 
     /* Look-ahead in the direction of travel, scaled by speed: the camera shows
        you where you are going, not where you are. */
-    float lead = (p->vx / RUN_MAX) * 52.0f;
-    float tx = p->x + p->w * 0.5f + lead - ARC_W * 0.5f;
-    float ty = p->y + p->h * 0.5f - ARC_H * 0.55f;
+    float lead = (p->vx / RUN_MAX) * 36.0f;
+    float tx = p->x + p->w * 0.5f + lead - VIEW_W * 0.5f;
+    float ty = p->y + p->h * 0.5f - VIEW_H * 0.55f;
 
     float k = 1.0f - expf(-dt / 0.18f);
     w->cam_x += (tx - w->cam_x) * k;
     w->cam_y += (ty - w->cam_y) * k * 1.4f;
 
-    float max_x = (float)(w->w * TILE - ARC_W);
-    float max_y = (float)(w->h * TILE - ARC_H);
+    float max_x = (float)(w->w * TILE - VIEW_W);
+    float max_y = (float)(w->h * TILE - VIEW_H);
     if (w->cam_x < 0) w->cam_x = 0;
     if (w->cam_y < 0) w->cam_y = 0;
     if (w->cam_x > max_x) w->cam_x = max_x;
@@ -681,8 +703,11 @@ static void quad(float x, float y, float w, float h, int cell, uint32_t col)
 }
 
 /* ------------------------------------------------------------- city atlas
- * Real CC0 art (ansimuz "Warped City") packed by tools/atlaspack.py into
- * assets/atlas_city.png - see docs/ASSETS.md for the licence audit. */
+ * Real CC0 art (ansimuz "Warped City" / "Warped City 2") packed by
+ * tools/atlaspack.py into assets/atlas_city.png - see docs/ASSETS.md. */
+
+#define FLIP_H 1
+#define FLIP_V 2
 
 static void city_uv(arc_rect r, float *u0, float *v0, float *u1, float *v1)
 {
@@ -693,53 +718,69 @@ static void city_uv(arc_rect r, float *u0, float *v0, float *u1, float *v1)
     *v1 = (r.y + r.h) / (float)ATLAS_CITY_H - py;
 }
 
-static void city_quad(float x, float y, float w, float h, arc_rect r, int flip, uint32_t col)
+static void city_quad(float x, float y, float w, float h, arc_rect r, int flags, uint32_t col)
 {
     float u0, v0, u1, v1;
     city_uv(r, &u0, &v0, &u1, &v1);
-    if (flip) { float t = u0; u0 = u1; u1 = t; }
+    if (flags & FLIP_H) { float t = u0; u0 = u1; u1 = t; }
+    if (flags & FLIP_V) { float t = v0; v0 = v1; v1 = t; }
     gfx_batch_quad(x, y, w, h, u0, v0, u1, v1, col);
 }
 
-static void draw_parallax_layer(arc_world *w, arc_rect r, float factor, float y)
+/* Parallax draws in screen space (unzoomed projection) so the source art
+ * keeps its authored pixel density regardless of the world zoom. */
+static void draw_parallax_layer(arc_world *w, arc_rect r, float factor, float y, uint32_t col)
 {
     float u0, v0, u1, v1;
     city_uv(r, &u0, &v0, &u1, &v1);
 
-    float world_x = -w->cam_x * factor;
-    float start = fmodf(world_x, (float)r.w);
+    float start = fmodf(-w->cam_x * factor, (float)r.w);
     if (start > 0) start -= (float)r.w;
 
     for (float x = start; x < ARC_W; x += (float)r.w)
-        gfx_batch_quad(x, y, (float)r.w, (float)r.h, u0, v0, u1, v1, rgba(255, 255, 255, 255));
+        gfx_batch_quad(x, y, (float)r.w, (float)r.h, u0, v0, u1, v1, col);
 }
 
-static void draw_parallax(arc_world *w)
-{
-    draw_parallax_layer(w, RECT_SKYLINE_A, 0.04f, 0.0f);
-    draw_parallax_layer(w, RECT_NEAR_BUILDINGS, 0.18f, (float)ARC_H - RECT_NEAR_BUILDINGS.h);
-}
-
+/* Real tiles from Warped City 2: lilac top surface, teal pipe band beneath
+ * it, purple fill below that - the same silhouette the grey-box had, now in
+ * the pack's own palette. Drawn in the city-atlas batch. */
 static void draw_tiles(arc_world *w)
 {
-    int tx0 = (int)(w->cam_x / TILE) - 1, tx1 = tx0 + ARC_W / TILE + 3;
-    int ty0 = (int)(w->cam_y / TILE) - 1, ty1 = ty0 + ARC_H / TILE + 3;
+    int tx0 = (int)(w->cam_x / TILE) - 1, tx1 = tx0 + VIEW_W / TILE + 3;
+    int ty0 = (int)(w->cam_y / TILE) - 1, ty1 = ty0 + VIEW_H / TILE + 3;
 
     for (int ty = ty0; ty <= ty1; ty++) {
         for (int tx = tx0; tx <= tx1; tx++) {
             char c = tile_at(w, tx, ty);
             float x = tx * TILE - w->cam_x, y = ty * TILE - w->cam_y;
             if (c == '#') {
-                /* Fade with depth into the frame so the ground reads as a
-                   surface rather than a wall of identical squares. */
-                int lit = !world_tile_solid(w, tx, ty - 1);
-                quad(x, y, TILE, TILE, CELL_TILE,
-                     lit ? rgba(255, 255, 255, 255) : rgba(150, 150, 165, 255));
-            } else if (c == '=') {
-                quad(x, y, TILE, 4, CELL_SOLID, rgba(120, 190, 230, 220));
+                int top  = !world_tile_solid(w, tx, ty - 1);
+                int band = !top && !world_tile_solid(w, tx, ty - 2);
+                arc_rect r = top ? RECT_TILE_TOP : (band ? RECT_TILE_BAND : RECT_TILE_FILL);
+                /* Cool the lilac top toward the moonlight, darken the fill so
+                   big walls recede instead of reading flat. */
+                uint32_t col = top  ? rgba(215, 215, 250, 255)
+                             : band ? rgba(235, 235, 255, 255)
+                                    : rgba(160, 160, 190, 255);
+                city_quad(x, y, TILE, TILE, r, 0, col);
             }
         }
     }
+}
+
+/* One-way platforms: a slice of the teal pipe band, so they read as part of
+ * the same construction kit as the ground. Drawn in the city batch. */
+static void draw_oneways(arc_world *w)
+{
+    int tx0 = (int)(w->cam_x / TILE) - 1, tx1 = tx0 + VIEW_W / TILE + 3;
+    int ty0 = (int)(w->cam_y / TILE) - 1, ty1 = ty0 + VIEW_H / TILE + 3;
+
+    arc_rect r = { RECT_TILE_BAND.x, RECT_TILE_BAND.y + 4, 16, 6 };
+    for (int ty = ty0; ty <= ty1; ty++)
+        for (int tx = tx0; tx <= tx1; tx++)
+            if (tile_at(w, tx, ty) == '=')
+                city_quad(tx * TILE - w->cam_x, ty * TILE - w->cam_y,
+                          TILE, 6, r, 0, rgba(255, 255, 255, 255));
 }
 
 /* Sprite is bigger than the collision box on purpose - a forgiving hitbox
@@ -784,7 +825,21 @@ static void draw_player(arc_world *w)
     if (p->state == PS_DASH) col = rgba(190, 255, 255, 255);
     if (p->invuln > 0 && fmodf(w->time * 20.0f, 2.0f) < 1.0f) col = rgba(255, 130, 130, 255);
 
-    city_quad(x, y, dw, dh, r, p->facing < 0, col);
+    city_quad(x, y, dw, dh, r, p->facing < 0 ? FLIP_H : 0, col);
+
+    /* Wet-street reflection: mirror the sprite about the surface underneath.
+       One extra quad per actor buys most of the "rain-slick city" look. */
+    float feet_wy = p->y + p->h;
+    int ty = (int)(feet_wy / TILE);
+    for (int k = 0; k < 4; k++, ty++) {
+        if (!world_tile_solid(w, (int)((p->x + p->w * 0.5f) / TILE), ty)) continue;
+        float surf = ty * TILE - w->cam_y;
+        if (surf < y + dh - 1.0f) break;              /* inside the ground */
+        city_quad(x, 2.0f * surf - (y + dh), dw, dh, r,
+                  (p->facing < 0 ? FLIP_H : 0) | FLIP_V,
+                  rgba(140, 170, 220, 60));
+        break;
+    }
 }
 
 static void draw_enemies(arc_world *w, int additive)
@@ -800,17 +855,20 @@ static void draw_enemies(arc_world *w, int additive)
         float bw = ENEMY_W * (1.0f - en->squash * 0.5f);
         y += ENEMY_H - h;
 
+        float bob = sinf(w->time * 2.4f + i * 1.7f) * 2.5f;
+
         if (additive) {
-            if (en->hit_flash > 0)
-                quad(x - 6, y - 6, bw + 12, h + 12, CELL_GLOW, rgba(255, 200, 120, 180));
+            /* Every drone carries its own little search-light glow. */
+            quad(x + bw * 0.5f - 10, y + bob + h * 0.5f - 10, 20, 20, CELL_GLOW,
+                 en->hit_flash > 0 ? rgba(255, 200, 120, 200) : rgba(255, 90, 90, 70));
         } else {
             int frame = ((int)(w->time * 10.0f) + i * 3) % DRONE_FRAMES;
             arc_rect r = { RECT_DRONE.x + frame * DRONE_FRAME_W, RECT_DRONE.y,
                           DRONE_FRAME_W, DRONE_FRAME_H };
             uint32_t col = en->hit_flash > 0 ? rgba(255, 220, 190, 255) : rgba(255, 255, 255, 255);
-            float dw = DRONE_FRAME_W * 0.4f, dh = DRONE_FRAME_H * 0.4f;
-            city_quad(x + bw * 0.5f - dw * 0.5f, y + h * 0.5f - dh * 0.5f, dw, dh,
-                     r, en->vx < 0, col);
+            float dw = DRONE_FRAME_W * 0.5f, dh = DRONE_FRAME_H * 0.5f;
+            city_quad(x + (bw - dw) * 0.5f, y + bob + (h - dh) * 0.5f, dw, dh,
+                     r, en->vx < 0 ? FLIP_H : 0, col);
         }
     }
 }
@@ -826,9 +884,13 @@ static void draw_ents(arc_world *w, int additive)
 
         switch (e->kind) {
             case E_VOLT:
+                /* Small core, small glow, big bob: reads as a pickup through
+                   motion, not brightness - bright static rects read as
+                   background windows. */
                 if (e->taken) break;
-                if (additive) quad(x - 7, y - 7 + bob, 14, 14, CELL_GLOW, rgba(120, 230, 255, 150));
-                else          quad(x - 1.5f, y - 2.5f + bob, 3, 5, CELL_SOLID, rgba(200, 250, 255, 255));
+                bob = sinf(e->bob) * 3.0f;
+                if (additive) quad(x - 4, y - 4 + bob, 8, 8, CELL_GLOW, rgba(120, 230, 255, 110));
+                else          quad(x - 1.0f, y - 2.0f + bob, 2, 4, CELL_SOLID, rgba(210, 250, 255, 255));
                 break;
             case E_ECHO:
                 if (e->taken) break;
@@ -885,9 +947,15 @@ static void draw_hud(arc_world *w)
         const char *t = "DELIVERED";
         font_text((ARC_W - font_width(3, t)) * 0.5f, ARC_H * 0.4f, 3,
                   rgba(255, 245, 220, 255), t);
-        snprintf(buf, sizeof buf, "TIME %d DEATHS %d", (int)w->time, w->deaths);
+        snprintf(buf, sizeof buf, "TIME %d DEATHS %d VOLTS %d OF %d ECHOES %d OF %d",
+                 (int)w->time, w->deaths, w->volts, w->volts_total,
+                 w->echoes, w->echoes_total);
         font_text((ARC_W - font_width(1, buf)) * 0.5f, ARC_H * 0.4f + 24, 1,
                   rgba(200, 220, 240, 230), buf);
+
+        const char *again = "PRESS R TO RUN IT AGAIN";
+        font_text((ARC_W - font_width(1, again)) * 0.5f, ARC_H * 0.4f + 40, 1,
+                  rgba(150, 175, 205, 200), again);
     }
 }
 
@@ -910,7 +978,8 @@ static void draw_hints(arc_world *w)
     for (int i = 0; i < w->ent_count; i++) {
         arc_ent *e = &w->ents[i];
         if (e->kind != E_HINT) continue;
-        float x = e->x - w->cam_x, y = e->y - w->cam_y;
+        /* World-anchored text in a screen-space batch: scale by the zoom. */
+        float x = (e->x - w->cam_x) * ZOOM, y = (e->y - w->cam_y) * ZOOM;
         if (x < -200 || x > ARC_W + 200) continue;
         font_text(x - font_width(1, HINTS[0]) * 0.5f, y, 1,
                   rgba(150, 175, 205, 200), HINTS[0]);
@@ -920,46 +989,69 @@ static void draw_hints(arc_world *w)
 void world_render(arc_world *w, const arc_texture *atlas, const arc_texture *city,
                   const arc_shader *sprite)
 {
-    /* Background: real art, parallax-scrolled, drawn first so everything else
-       paints over it. */
+    /* Sky and far skyline, screen-space so the art keeps its pixel density. */
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     gfx_batch_begin(sprite, city, ARC_W, ARC_H);
-    draw_parallax(w);
+    draw_parallax_layer(w, RECT_SKYLINE_A, 0.04f, 0.0f, rgba(150, 160, 205, 255));
     gfx_batch_end();
 
-    /* Gameplay layer: tiles and pickups stay procedural (GDD §6.2 - the
-       gameplay layer is the brightest, least busy layer; abstract shapes
-       read cleaner here than the source packs' busy facades would). */
-    gfx_batch_begin(sprite, atlas, ARC_W, ARC_H);
-    draw_tiles(w);
-    draw_ents(w, 0);
-    gfx_batch_end();
-
-    /* Actors: real sprites, on top of the procedural world. */
+    /* Near buildings, dimmed and cooled. GDD §6.2: the gameplay layer must be
+       the brightest and least busy thing on screen, and these facades are the
+       busiest art in the game. */
     gfx_batch_begin(sprite, city, ARC_W, ARC_H);
+    draw_parallax_layer(w, RECT_NEAR_BUILDINGS, 0.18f,
+                        (float)ARC_H - RECT_NEAR_BUILDINGS.h, rgba(120, 130, 175, 255));
+    gfx_batch_end();
+
+    /* Fog plane between the background and the gameplay plane - the cheapest
+       depth in games, and what actually separates the two reads. */
+    gfx_batch_begin(sprite, atlas, ARC_W, ARC_H);
+    quad(0, 0, ARC_W, ARC_H, CELL_SOLID, rgba(20, 24, 56, 120));
+    gfx_batch_end();
+
+    /* The moon, drawn after the fog: it is the scene's light source, so it
+       reads as glowing through the haze rather than sitting behind it. */
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    gfx_batch_begin(sprite, atlas, ARC_W, ARC_H);
+    quad(250, -50, 220, 220, CELL_GLOW, rgba(120, 160, 235, 90));
+    quad(305, 5, 110, 110, CELL_GLOW, rgba(190, 215, 255, 150));
+    quad(337, 37, 46, 46, CELL_GLOW, rgba(255, 255, 255, 230));
+    gfx_batch_end();
+
+    /* World: real tiles + actors, in the zoomed projection. The reflection
+       quads live inside draw_player, so actors draw after tiles. */
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    gfx_batch_begin(sprite, city, VIEW_W, VIEW_H);
+    draw_tiles(w);
+    draw_oneways(w);
     draw_player(w);
     draw_enemies(w, 0);
     gfx_batch_end();
 
-    gfx_batch_begin(sprite, atlas, ARC_W, ARC_H);
-    draw_plates(w);
+    /* Procedural gameplay markers: pickups, checkpoints. */
+    gfx_batch_begin(sprite, atlas, VIEW_W, VIEW_H);
+    draw_ents(w, 0);
     gfx_batch_end();
 
-    /* Additive layer: every glow in the frame, procedural. */
+    /* Additive glow layer, world space. */
     glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-    gfx_batch_begin(sprite, atlas, ARC_W, ARC_H);
+    gfx_batch_begin(sprite, atlas, VIEW_W, VIEW_H);
     draw_ents(w, 1);
     draw_enemies(w, 1);
     if (w->p.state != PS_DEAD) {
         arc_player *p = &w->p;
-        float g = 30.0f + p->charge * 0.35f;
+        float g = 24.0f + p->charge * 0.25f;
         quad(p->x + p->w * 0.5f - g - w->cam_x, p->y + p->h * 0.5f - g - w->cam_y,
-             g * 2, g * 2, CELL_GLOW, rgba(90, 190, 255, 70));
+             g * 2, g * 2, CELL_GLOW, rgba(90, 190, 255, 60));
     }
     gfx_batch_end();
 
-    /* Text last, alpha, on its own texture. */
+    /* HUD and text, screen space. */
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    gfx_batch_begin(sprite, atlas, ARC_W, ARC_H);
+    draw_plates(w);
+    gfx_batch_end();
+
     gfx_batch_begin(sprite, font_texture(), ARC_W, ARC_H);
     draw_hints(w);
     draw_hud(w);

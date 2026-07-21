@@ -15,6 +15,9 @@ typedef struct { int x, y, w, h; } arc_rect;
 #define RECT_PLAYER_RUN ((arc_rect){0, 465, 568, 67})
 #define RECT_SKYLINE_A ((arc_rect){384, 0, 128, 240})
 #define RECT_SKYLINE_B ((arc_rect){512, 0, 128, 240})
+#define RECT_TILE_BAND ((arc_rect){236, 532, 16, 16})
+#define RECT_TILE_FILL ((arc_rect){252, 532, 16, 16})
+#define RECT_TILE_TOP ((arc_rect){220, 532, 16, 16})
 #define RECT_TILESET ((arc_rect){0, 0, 384, 256})
 
 #define PLAYER_FRAME_W 71

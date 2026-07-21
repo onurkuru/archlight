@@ -65,72 +65,85 @@ class Grid:
 
 
 def build_1_1():
-    """1-1 THE GUTTER - grey-box. Teaches the verb set in GDD order:
-    run -> jump -> one-way -> wall jump -> dash -> stomp -> tether."""
-    W, H = 210, 24
+    """1-1 THE GUTTER. Teaches the verb set in GDD order, tuned for the 2x
+    camera (visible window is 15x8.5 tiles): shorter sight-lines, a drone
+    every couple of screens, volts always marking the line."""
+    W, H = 200, 24
     g = Grid(W, H)
     GY = 18                      # ground row
 
-    # --- teach: run. Flat, safe, a Volt trail that rewards holding top speed.
-    g.floor(0, 26, GY)
-    g.put(4, GY - 2, 'S')
-    g.volts(8, GY - 2, 24, GY - 2, 9)
-    g.put(14, GY - 4, 'T')       # tutorial hint marker
+    # --- teach: run. Short, safe, volts immediately.
+    g.floor(0, 20, GY)
+    g.put(3, GY - 2, 'S')
+    g.volts(6, GY - 2, 18, GY - 2, 7)
+    g.put(11, GY - 3, 'T')       # tutorial hint marker
 
-    # --- teach: jump. Three gaps, widening. First is free, third needs commit.
-    g.floor(30, 40, GY)
-    g.arc(27, GY - 2, 30, GY - 2, 3, 5)
-    g.enemy(34, GY - 1)               # first Scrapper, plenty of runway to see it coming
-    g.floor(45, 56, GY)
-    g.arc(41, GY - 2, 45, GY - 2, 4, 6)
-    g.floor(62, 74, GY)
-    g.arc(57, GY - 2, 62, GY - 2, 5, 7)
-    g.put(70, GY - 1, 'C')       # checkpoint 1
+    # --- teach: jump + first drone at head height, stompable from a hop.
+    g.floor(24, 33, GY)
+    g.arc(21, GY - 2, 24, GY - 2, 3, 5)
+    g.enemy(28, GY - 2)
+    g.floor(37, 46, GY)
+    g.arc(34, GY - 2, 37, GY - 2, 4, 6)
+    g.enemy(42, GY - 2)
+    g.put(45, GY - 1, 'C')       # checkpoint 1
 
-    # --- teach: one-way platforms, and height as a resource.
-    g.plat(78, GY - 4, 5)
-    g.plat(86, GY - 7, 5)
-    g.plat(94, GY - 10, 5)
-    g.floor(78, 100, GY)
-    g.arc(75, GY - 2, 80, GY - 5, 3, 5)
-    g.volts(88, GY - 9, 96, GY - 12, 5)
-    g.put(96, GY - 12, 'E')      # echo 1, on the high line
+    # --- teach: one-way ladder up, drone guarding the echo line.
+    g.floor(50, 72, GY)
+    g.arc(47, GY - 2, 51, GY - 2, 4, 5)
+    g.plat(53, GY - 4, 4)
+    g.plat(59, GY - 7, 4)
+    g.plat(65, GY - 10, 4)
+    g.enemy(62, GY - 8)
+    g.volts(55, GY - 6, 66, GY - 12, 6)
+    g.put(67, GY - 12, 'E')      # echo 1, top of the ladder
 
-    # --- teach: wall jump. A shaft with no floor route out.
-    g.floor(100, 104, GY)
-    g.block(105, GY - 13, 2, 13)      # left wall of the shaft
-    g.block(112, GY - 16, 2, 16)      # right wall, taller
-    g.floor(107, 111, GY)             # shaft floor (a pit you must climb out of)
+    # --- teach: wall jump. Compact shaft; volts zigzag shows the bounces.
+    g.floor(73, 76, GY)
+    # Walls use floor(), not block(): block() would leave the rows beneath it
+    # empty, i.e. a bottomless pit right where the player runs into the shaft.
+    g.floor(77, 78, GY - 12)
+    g.floor(82, 83, GY - 13)      # top flush with the shaft exit, not above it
+    g.floor(79, 81, GY)
+    # 3 tiles wide: each wall jump climbs ~2 tiles, so a narrower shaft keeps
+    # the bounces close enough together to read as a rhythm.
     for i in range(5):
-        g.put(107 + (i % 2) * 4, GY - 3 - i * 2, 'v')
-    g.plat(107, GY - 14, 5)
-    g.put(109, GY - 15, 'C')          # checkpoint 2, at the top
+        g.put(79 + (i % 2) * 2, GY - 3 - i * 2, 'v')
+    g.plat(79, GY - 13, 3)
+    g.put(80, GY - 14, 'C')      # checkpoint 2, top of the shaft
 
-    # --- teach: dash. A gap too wide to jump, with a landing you can see.
-    g.floor(114, 122, GY - 14)
-    g.floor(133, 146, GY - 14)
-    g.volts(124, GY - 15, 131, GY - 15, 5)
-    g.put(140, GY - 16, 'E')          # echo 2
+    # --- teach: dash across the roofline, drones patrolling the gaps.
+    g.floor(84, 92, GY - 13)
+    g.floor(99, 108, GY - 13)
+    g.volts(93, GY - 14, 98, GY - 14, 4)
+    g.enemy(95, GY - 15)
+    g.floor(113, 124, GY - 13)
+    g.volts(109, GY - 14, 112, GY - 14, 3)
+    g.enemy(118, GY - 15)
+    g.put(121, GY - 16, 'E')     # echo 2 on the roofline
+    g.put(122, GY - 14, 'C')     # checkpoint 3
 
-    # --- teach: stomp. A one-way roof over a pit of Volts; the only way in is down.
-    g.floor(150, 168, GY)
-    g.plat(152, GY - 6, 14)
-    g.put(153, GY - 7, 'C')           # checkpoint 3, on the roof
-    g.volts(154, GY - 3, 164, GY - 3, 7)
-    g.put(159, GY - 2, 'E')           # echo 3, under the roof
-    g.enemy(161, GY - 1)              # a second Scrapper, now under a roof - stomp or dash it
-    g.arc(147, GY - 15, 152, GY - 7, 2, 6)
+    # --- teach: stomp. Drop off the roof through one-ways into a volt pit.
+    g.floor(128, 148, GY)
+    g.plat(130, GY - 6, 12)
+    g.volts(132, GY - 3, 142, GY - 3, 6)
+    g.put(137, GY - 2, 'E')      # echo 3, under the roof
+    g.enemy(139, GY - 5)
+    g.enemy(133, GY - 2)
 
-    # --- teach: tether. Anchors over a long gap, no floor at all.
-    g.put(174, GY - 12, 'A')
-    g.put(183, GY - 13, 'A')
-    g.put(192, GY - 11, 'A')
-    g.arc(170, GY - 4, 196, GY - 4, 9, 14)
+    # --- teach: tether. Anchors over the void; a drone hovers on the line.
+    g.put(153, GY - 11, 'A')
+    g.put(161, GY - 12, 'A')
+    g.put(169, GY - 10, 'A')
+    g.arc(149, GY - 4, 174, GY - 4, 8, 12)
+    g.enemy(163, GY - 6)
 
-    # --- landing pad: the GDD's end-of-level sprint. Downhill, no hazards.
-    g.floor(196, W - 1, GY)
-    g.volts(198, GY - 2, 206, GY - 2, 6)
-    g.put(206, GY - 3, 'X')
+    # --- landing pad sprint: flat, fast, lined with volts, one last drone
+    #     placed to be dashed through at full speed.
+    g.floor(174, W - 1, GY)
+    g.put(175, GY - 1, 'C')      # checkpoint 4, start of the pad
+    g.volts(177, GY - 2, 194, GY - 2, 10)
+    g.enemy(186, GY - 2)
+    g.put(196, GY - 3, 'X')
 
     return '1-1', 'THE GUTTER', g
 
@@ -162,6 +175,22 @@ def validate(name, g):
         if b - a > 70:
             problems.append(f"{name}: {b - a} tiles between checkpoints at x={a} "
                             f"and x={b} (max 70)")
+
+    # Bottomless columns. Designed gaps are bottomless too, so this is a note
+    # rather than an error - but an unintended one (a wall built with block()
+    # leaving empty rows under it) shows up here as a run of 1-2 columns in
+    # the middle of otherwise solid ground, which is easy to spot.
+    holes = [x for x in range(g.w)
+             if not any(g.g[y][x] == SOLID for y in range(g.h))]
+    runs = []
+    for x in holes:
+        if runs and runs[-1][1] == x - 1:
+            runs[-1][1] = x
+        else:
+            runs.append([x, x])
+    if runs:
+        print(f"  note: {name} bottomless columns: "
+              + ', '.join(f"{a}-{b}" if a != b else str(a) for a, b in runs))
 
     return problems
 

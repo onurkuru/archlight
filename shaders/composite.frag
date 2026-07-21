@@ -6,6 +6,22 @@ uniform sampler2D u_tex;    /* scene, 480x272 */
 uniform sampler2D u_tex2;   /* bloom, 240x136 */
 uniform vec4 u_texel;       /* xy = 1/scene size */
 uniform vec4 u_param;       /* x = bloom amount, y = vignette, z = scanline, w = aberration */
+uniform vec4 u_dir;         /* x = time (s), y = rain intensity */
+
+/* One layer of screen-space rain: slanted columns, per-column phase, most
+ * columns empty. Two calls at different scales fake depth. */
+float rain(vec2 uv, float t, float cols, float speed, float slant, float len)
+{
+    vec2 p = vec2(uv.x * cols + uv.y * slant, uv.y);
+    float col = floor(p.x);
+    float h = fract(sin(col * 127.1) * 43758.5453);
+    if (h < 0.72) return 0.0;                    /* most columns carry no drop */
+
+    float y = fract(p.y * 1.5 + t * speed + h * 7.0);
+    float streak = smoothstep(1.0 - len, 1.0, y);
+    float fx = abs(fract(p.x) - 0.5);
+    return streak * (1.0 - smoothstep(0.03, 0.12, fx));
+}
 
 void main() {
     vec2 uv = v_uv;
@@ -21,6 +37,11 @@ void main() {
 
     vec3 bloom = TEX2D(u_tex2, uv).rgb;
     vec3 c = scene + bloom * u_param.x;
+
+    /* Rain: a far sheet and a near sheet, tinted with the moonlight. */
+    float rf = rain(uv, u_dir.x, 90.0, 0.9, 14.0, 0.55)
+             + rain(uv, u_dir.x, 42.0, 1.4, 10.0, 0.40) * 1.6;
+    c += vec3(0.45, 0.55, 0.80) * rf * 0.16 * u_dir.y;
 
     /* Grade: lift the shadows toward the district's ambient hue, cool the
        midtones, keep the highlights where the artist put them. */

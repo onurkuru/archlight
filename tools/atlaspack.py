@@ -23,6 +23,7 @@ OUT_H = ROOT / "src" / "atlas_city.h"
 # only for pack density. Frame strips list every frame explicitly rather than
 # guessing a stride, since ansimuz filenames are not always zero-padded.
 WARPED_CITY = "warped city files.zip"
+WARPED_CITY_2 = "cyberpunk city 2 files.zip"
 
 SOURCES = {
     # -- Building facade props (windows, doors, monitors) - irregular sizes,
@@ -43,6 +44,16 @@ SOURCES = {
     "skyline_a": (WARPED_CITY, "warped city files/Assets/ENVIRONMENT/background/skyline-a.png"),
     "skyline_b": (WARPED_CITY, "warped city files/Assets/ENVIRONMENT/background/skyline-b.png"),
     "near_buildings": (WARPED_CITY, "warped city files/Assets/ENVIRONMENT/background/near-buildings-bg.png"),
+}
+
+# 16x16 cells cut out of larger sheets: name -> (zip, path, (x, y, w, h)).
+# Warped City 2's tileset is drawn as loose platform blocks, not a grid, but
+# these three cells tile cleanly and give the ground real art: the lilac top
+# surface, the teal pipe band under it, and the purple wall fill.
+CROPS = {
+    "tile_top":  (WARPED_CITY_2, "cyberpunk city 2 files/Environmet/tileset.png", (528, 16, 16, 16)),
+    "tile_band": (WARPED_CITY_2, "cyberpunk city 2 files/Environmet/tileset.png", (528, 40, 16, 16)),
+    "tile_fill": (WARPED_CITY_2, "cyberpunk city 2 files/Environmet/tileset.png", (576, 96, 16, 16)),
 }
 
 PLAYER_FRAME_W = 71
@@ -87,6 +98,8 @@ def main():
         return 1
 
     images = {name: load(*src) for name, src in SOURCES.items()}
+    for name, (zip_name, path, (x, y, w, h)) in CROPS.items():
+        images[name] = load(zip_name, path).crop((x, y, x + w, y + h))
 
     shelf = Shelf(1024)
     rects = {}
