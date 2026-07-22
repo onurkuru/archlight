@@ -128,9 +128,13 @@ def gate(g, GY, x, style='climb'):
     - 'run':   a low hop-line of nodes straight at the shutter - hack on the
                approach, collect at speed, no ladder at all (D2, D4, D5)"""
     if style == 'run':
+        # All three nodes at running height: you hack on the approach and
+        # sweep straight through them, no jump. The middle node used to sit a
+        # tile higher, which needed a precise hop - miss it and the gate never
+        # opened and you were stuck at a closed shutter.
         g.put(x, GY - 2, 'H')
         g.put(x + 3, GY - 2, 'N')
-        g.put(x + 5, GY - 3, 'N')
+        g.put(x + 5, GY - 2, 'N')
         g.put(x + 7, GY - 2, 'N')
         g.door(x + 10, GY - 15, GY - 1)
         return

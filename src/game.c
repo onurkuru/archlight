@@ -675,21 +675,34 @@ static void player_update(arc_world *w, arc_player *p, const arc_input *in, floa
         }
 
         int hacked_terminal = 0;
-        if (!w->door_open && w->hack_t <= 0) {
+        if (!w->door_open) {
             for (int i = 0; i < w->ent_count; i++) {
                 arc_ent *e = &w->ents[i];
                 if (e->kind != E_TERMINAL) continue;
                 float ex = e->x - pcx, ey = e->y - pcy;
                 if (ex * ex + ey * ey > PULSE_RANGE * PULSE_RANGE) continue;
 
+                /* Hacking the terminal opens the gate outright. It used to only
+                   start a window during which you had to sweep three relay
+                   nodes, and if you missed one the shutter stayed shut and you
+                   were stuck at a dead end. The nodes now light up as an
+                   optional Charge bonus for the window, but the door is never
+                   gated on them - a hack is a hack. */
+                w->door_open = 1;
                 w->hack_t = HACK_WINDOW;
                 for (int j = 0; j < w->ent_count; j++)
                     if (w->ents[j].kind == E_NODE) w->ents[j].taken = 0;
 
                 p->pulse_cd = PULSE_CD;
+                gain(p, 15.0f);
                 w->emp_t = 0.30f; w->emp_x = pcx; w->emp_y = pcy;
+                w->ring_t = 0.34f; w->ring_x = w->door_x; w->ring_y = w->door_y;
+                w->shake = 0.18f;
+                audio_play(SFX_GATE, 0.85f, 1.0f);
                 spawn_parts(w, e->x, e->y, 8, 110.0f, 1.0f,
                             rgba(120, 240, 255, 230), 1, 40.0f);
+                spawn_parts(w, w->door_x, w->door_y, 14, 170.0f, 1.0f,
+                            rgba(140, 255, 200, 230), 1, 300.0f);
                 hacked_terminal = 1;
                 break;
             }
@@ -1799,32 +1812,16 @@ static void collect(arc_world *w, arc_player *p, float dt)
                 break;
             }
             case E_NODE:
-                /* Only live while the window is open; radius is generous
-                   because you hit these mid-wall-jump. */
-                if (w->hack_t > 0 && d2 < 16.0f * 16.0f) {
+                /* Optional Charge pickups that light up for the hack window
+                   the terminal opened. The door is already open by now (hacking
+                   opens it), so these are a reward for sweeping through, never
+                   a requirement - collecting them is fuel, not a lock. */
+                if (w->hack_t > 0 && fabsf(dx) < 22.0f && fabsf(dy) < 26.0f) {
                     e->taken = 1;
-                    gain(p, 6.0f);
+                    gain(p, 10.0f);
                     spawn_parts(w, e->x, e->y, 6, 90.0f, 1.0f,
                                 rgba(120, 240, 255, 220), 1, 60.0f);
-                    audio_play(SFX_NODE, 0.7f, 1.0f + 0.12f * (3 - 1));
-
-                    int left = 0;
-                    for (int j = 0; j < w->ent_count; j++)
-                        if (w->ents[j].kind == E_NODE && !w->ents[j].taken) left++;
-                    if (left == 0) {
-                        w->door_open = 1;
-                        w->hack_t = 0;
-                        gain(p, 15.0f);
-                        /* The unlock is an event at the DOOR, not at the
-                           player: the ring pulls your eye to the thing that
-                           just changed. */
-                        w->ring_t = 0.34f;
-                        w->ring_x = w->door_x; w->ring_y = w->door_y;
-                        w->shake = 0.18f;
-                        audio_play(SFX_GATE, 0.85f, 1.0f);
-                        spawn_parts(w, w->door_x, w->door_y, 14, 170.0f, 1.0f,
-                                    rgba(140, 255, 200, 230), 1, 300.0f);
-                    }
+                    audio_play(SFX_NODE, 0.7f, 1.2f);
                 }
                 break;
             default: break;
@@ -2194,8 +2191,11 @@ static void draw_ents_art(arc_world *w)
                 uint32_t tint = live     ? rgba(255, 255, 255, 255)
                               : e->taken ? rgba(120, 220, 180, 200)
                                          : rgba(80, 90, 115, 255);
-                city_quad(x - NODE_FRAME_W * 0.2f, y - NODE_FRAME_H * 0.2f,
-                          NODE_FRAME_W * 0.4f, NODE_FRAME_H * 0.4f, r, 0, tint);
+                /* Small - the 2x world zoom already doubles it. At 0.4 the
+                   panel read as a machine you could mistake for an enemy; this
+                   keeps it a wall-mounted relay you sweep past. */
+                city_quad(x - NODE_FRAME_W * 0.14f, y - NODE_FRAME_H * 0.14f,
+                          NODE_FRAME_W * 0.28f, NODE_FRAME_H * 0.28f, r, 0, tint);
                 break;
             }
             default: break;
@@ -2686,8 +2686,25 @@ static void draw_hints(arc_world *w)
        where the mechanic is first free to try, and is never repeated. */
     static const char *HINTS[] = { "Z JUMP   X DASH   C TETHER   V FIRE   F HACK" };
 
+    float pcx = w->p.x + w->p.w * 0.5f, pcy = w->p.y + w->p.h * 0.5f;
+
     for (int i = 0; i < w->ent_count; i++) {
         arc_ent *e = &w->ents[i];
+
+        /* A closed gate reads as a dead end unless the game says what opens it:
+           when you are near an un-hacked terminal, prompt the verb. Without
+           this the shutter just looked like a wall and you got stuck. */
+        if (e->kind == E_TERMINAL && !w->door_open && w->hack_t <= 0) {
+            float dx = e->x - pcx, dy = e->y - pcy;
+            if (dx * dx + dy * dy < 90.0f * 90.0f) {
+                float x = (e->x - w->cam_x) * ZOOM, y = (e->y - 22.0f - w->cam_y) * ZOOM;
+                const char *pr = "PULSE F";
+                float blink = sinf(w->time * 6.0f) * 0.5f + 0.5f;
+                font_text(x - font_width(1, pr) * 0.5f, y, 1,
+                          rgba(120, 240, 255, (uint8_t)(255 * blink)), pr);
+            }
+        }
+
         if (e->kind != E_HINT) continue;
         /* World-anchored text in a screen-space batch: scale by the zoom. */
         float x = (e->x - w->cam_x) * ZOOM, y = (e->y - w->cam_y) * ZOOM;
