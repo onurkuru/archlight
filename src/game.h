@@ -112,6 +112,7 @@ typedef struct {
     int   phase;                /* boss phase, 0..2 */
     int   variant;              /* which district boss: 0..4 */
     float state_t;              /* seconds in the current boss beat */
+    float summon_cd;            /* CHORUS: seconds until the next drone drop */
 } arc_enemy;
 
 /* Enemy fire. Slow, visible, and blocked by geometry, because the counter to
@@ -186,6 +187,8 @@ typedef struct {
 
     arc_enemy enemies[MAX_ENEMIES];
     int       enemy_count;
+    int       base_enemy_count;  /* level-defined count; boss-summoned drones
+                                    live above this and are cleared on respawn */
 
     arc_shot  shots[MAX_SHOTS];
 

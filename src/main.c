@@ -370,6 +370,11 @@ int main(int argc, char **argv)
                 if (++intro_card >= world_intro_cards()) intro_card = -1;
             }
             accum = 0.0f;
+            /* The sim loop below (which clears these) is skipped during the
+               opening, so drop the edges here - otherwise a press used to skip
+               a card fires as a jump/dash on the first gameplay frame. */
+            latched.jump_edge = latched.dash_edge = latched.tether_edge =
+                latched.attack_edge = latched.pulse_edge = 0;
         }
 
         /* Music follows the place, and the Warden takes it over. Set every

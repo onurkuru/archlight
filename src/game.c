@@ -275,6 +275,7 @@ void world_load(arc_world *w, int index)
 
     w->check_x = w->spawn_x;
     w->check_y = w->spawn_y;
+    w->base_enemy_count = w->enemy_count;   /* everything above this is summoned */
     world_reset_to_checkpoint(w);
     w->cam_x = w->p.x - ARC_W * 0.5f;
     w->cam_y = w->p.y - ARC_H * 0.6f;
@@ -296,19 +297,32 @@ void world_reset_to_checkpoint(arc_world *w)
        and taking the fuel away would punish the retry the game wants to be free. */
     p->charge = charge > CHARGE_FLOOR ? charge : CHARGE_MAX * 0.5f;
 
+    /* Boss-summoned drones live above base_enemy_count; drop them so they do
+       not accumulate as permanent level enemies across deaths. */
+    if (w->base_enemy_count > 0) w->enemy_count = w->base_enemy_count;
+
     /* Popcorn enemies respawn with the player - a flow game's obstacles are
        part of the route, and a cleared route retried is a different level. */
     for (int i = 0; i < w->enemy_count; i++) {
-        w->enemies[i].alive = 1;
-        w->enemies[i].x = w->enemies[i].home_x;
-        w->enemies[i].y = w->enemies[i].home_y;
-        w->enemies[i].death_t = 0;
-        w->enemies[i].hit_flash = 0;
-        w->enemies[i].hacked = 0;
-        w->enemies[i].glitch = 0;
-        w->enemies[i].shoot_cd = 0;
-        w->enemies[i].telegraph = 0;
-        w->enemies[i].vx = w->enemies[i].vx > 0 ? 60.0f : -60.0f;
+        arc_enemy *en = &w->enemies[i];
+        en->alive = 1;
+        en->x = en->home_x;
+        en->y = en->home_y;
+        en->death_t = 0;
+        en->hit_flash = 0;
+        en->hacked = 0;
+        en->glitch = 0;
+        en->shoot_cd = 0;
+        en->telegraph = 0;
+        en->summon_cd = 0;
+        en->hp = en->hp_max;        /* a chipped boss comes back whole */
+        /* Restore the patrol speed the archetype was created with; the old
+           `vx>0?60:-60` slid turrets (vx 0 -> -60) off their lane and forced
+           cops from 42 to 60. */
+        en->vx = en->kind == EN_TURRET ?   0.0f
+               : en->kind == EN_COP    ?  42.0f
+               : en->kind == EN_WARDEN ? -150.0f
+                                       :  60.0f;
     }
 
     /* Debris and rounds in flight from the death that caused this respawn
@@ -316,6 +330,7 @@ void world_reset_to_checkpoint(arc_world *w)
     memset(w->parts, 0, sizeof w->parts);
     memset(w->shots, 0, sizeof w->shots);
     w->ring_t = 0;
+    w->ride = -1;               /* nobody is riding a mover at spawn */
 
     /* A hack interrupted by death resets; a door already opened stays open.
        Re-running the node climb after every death would punish the retry. */
@@ -643,12 +658,17 @@ static void player_update(arc_world *w, arc_player *p, const arc_input *in, floa
            not a challenge. (Ada left herself backdoors; drones cost Charge
            because they are Meridian's, the terminals were always hers.) */
         /* A Pulse also drops any beam in reach - GDD verb 7 says it kills
-           lasers, and this is where that stops being a document. */
+           lasers, and this is where that stops being a document. Dropping a
+           beam arms the cooldown, so it cannot be spammed to hold a beam down
+           for free forever; the beam cycles off on its own anyway. */
         for (int i = 0; i < w->laser_count; i++) {
             arc_laser *l = &w->lasers[i];
             float dx2 = l->x - pcx, dy2 = (l->y + l->len * 0.5f) - pcy;
-            if (dx2 * dx2 + dy2 * dy2 < (PULSE_RANGE * 1.6f) * (PULSE_RANGE * 1.6f))
+            if (dx2 * dx2 + dy2 * dy2 < (PULSE_RANGE * 1.6f) * (PULSE_RANGE * 1.6f)) {
                 l->down = 4.0f;
+                p->pulse_cd = PULSE_CD;
+                w->emp_t = 0.30f; w->emp_x = pcx; w->emp_y = pcy;
+            }
         }
 
         int hacked_terminal = 0;
@@ -1407,11 +1427,18 @@ static void enemies_update(arc_world *w, float dt)
                 float want = pcx + (pcx > en->x ? -150.0f : 150.0f);
                 en->vx = (want > en->x ? 1.0f : -1.0f) * speed;
                 en->x += en->vx * dt;
+                /* Clamp to the arena like WARDEN/BOUNCER, or the player can
+                   herd the 128px rig into a wall and strand it out of reach. */
+                float clo = 2.0f * TILE, chi = (w->w - 12) * (float)TILE - bw;
+                if (en->x < clo) en->x = clo;
+                if (en->x > chi) en->x = chi;
                 en->y = en->home_y + sinf(en->state_t * 0.9f) * 6.0f;
             } else if (V == 3) {
                 /* TIDE sweeps the whole arena in a wide sine, high then low. */
                 float span = (w->w - 20) * (float)TILE;
-                en->x = 8.0f * TILE + (0.5f - 0.5f * cosf(en->state_t * 0.7f)) * span;
+                float nx = 8.0f * TILE + (0.5f - 0.5f * cosf(en->state_t * 0.7f)) * span;
+                en->vx = nx - en->x;    /* keep vx signed by travel so the sprite faces its motion */
+                en->x = nx;
                 en->y = en->home_y + sinf(en->state_t * 1.8f) * 34.0f;
             } else {
                 /* WARDEN and BOUNCER hunt: close, barrel through, re-acquire. */
@@ -1426,12 +1453,14 @@ static void enemies_update(arc_world *w, float dt)
                         * (V == 1 ? 6.0f : 10.0f);
             }
 
-            /* CHORUS summons: on a timer it releases a drone, up to a live cap,
-               so the caretaker fields the city's own machines against you.
-               atk_chain_win doubles as its summon clock - it has no melee. */
+            /* CHORUS summons: a dedicated countdown drops a drone every ~2.6 s,
+               up to a live cap, so the caretaker fields the city's own machines
+               against you. (The old gate keyed on shoot_cd going below -1.5,
+               which it never did - the summon was dead code.) */
             if (V == 4 && en->phase >= 1) {
-                en->state_t = en->state_t;   /* clock is state_t below */
-                if (en->shoot_cd < -1.5f) {  /* reuse cd's negative tail as a gate */
+                en->summon_cd -= dt;
+                if (en->summon_cd <= 0.0f) {
+                    en->summon_cd = 2.6f;
                     int live = 0;
                     for (int j = 0; j < w->enemy_count; j++)
                         if (w->enemies[j].kind == EN_SCRAPPER && w->enemies[j].alive) live++;
@@ -1445,7 +1474,6 @@ static void enemies_update(arc_world *w, float dt)
                         nd->hp = nd->hp_max = 1; nd->alive = 1;
                         spawn_parts(w, nd->x + 11, nd->y + 10, 6, 90.0f, 1.0f,
                                     rgba(200, 120, 255, 220), 1, 40.0f);
-                        en->shoot_cd = fire_cd;   /* reset so the gate re-arms */
                     }
                 }
             }
@@ -1501,11 +1529,16 @@ static void enemies_update(arc_world *w, float dt)
             float dxb = (en->x + bw * 0.5f) - pcx, dyb = (en->y + 14.0f) - pcy;
             if (fabsf(dxb) < bw * 0.5f + 4.0f && fabsf(dyb) < 22.0f) {
                 int wins = p->state == PS_DASH || p->state == PS_STOMP;
-                if (wins) {
+                /* Gate on the boss's own hit-flash, not p->invuln: a dash keeps
+                   p->invuln refreshed every frame, so without this a single
+                   dash chipped the boss once per overlapping frame and killed
+                   it in one pass. enemy_kill sets hit_flash ~0.16 s, so this
+                   caps it at one chip per dash. */
+                if (wins && en->hit_flash <= 0.0f) {
                     enemy_kill(w, en, pcx < en->x ? 1.0f : -1.0f, 1.0f);
                     if (p->state == PS_STOMP) { p->vy = -STOMP_V * 0.6f; p->state = PS_AIR; }
                     p->invuln = 0.5f;
-                } else if (p->invuln <= 0 && p->state != PS_DEAD) {
+                } else if (!wins && p->invuln <= 0 && p->state != PS_DEAD) {
                     p->plates--;
                     p->invuln = 1.0f;
                     p->vx = (dxb > 0 ? -1.0f : 1.0f) * 220.0f;
@@ -1522,6 +1555,7 @@ static void enemies_update(arc_world *w, float dt)
         /* Enforcers shoot. They stop to aim, which is both the tell and the
            opening: a cop winding up is a cop not walking, and a cop mid-shot
            is a cop you can close on. */
+        int cop_rooted = 0;    /* a cop aiming holds still but stays hittable */
         if (en->kind == EN_COP) {
             if (en->shoot_cd > 0) en->shoot_cd -= dt;
 
@@ -1550,13 +1584,10 @@ static void enemies_update(arc_world *w, float dt)
                     }
                     en->shoot_cd = SHOT_COOLDOWN;
                 }
-                en->x += en->vx * dt * 0.0f;        /* rooted while aiming */
-                continue;
-            }
-
-            if (in_arc && en->shoot_cd <= 0 && p->state != PS_DEAD) {
+                cop_rooted = 1;        /* held in place, but still killable below */
+            } else if (in_arc && en->shoot_cd <= 0 && p->state != PS_DEAD) {
                 en->telegraph = SHOT_TELEGRAPH;
-                continue;
+                cop_rooted = 1;
             }
         }
 
@@ -1583,7 +1614,7 @@ static void enemies_update(arc_world *w, float dt)
              fabsf(en->x - en->home_x) > en->range)) {
             en->vx = -en->vx;
         }
-        en->x += en->vx * dt;
+        if (!cop_rooted) en->x += en->vx * dt;
 
         float dx = (en->x + ENEMY_W * 0.5f) - pcx, dy = (en->y + ENEMY_H * 0.5f) - pcy;
         int overlap = fabsf(dx) < (ENEMY_W + p->w) * 0.42f &&
@@ -1606,10 +1637,9 @@ static void enemies_update(arc_world *w, float dt)
             w->shake = 0.15f;
             w->hitstop = 0.05f;
 
-            audio_play(SFX_HURT, 0.8f, 1.0f);
+            audio_play(SFX_HURT, 0.8f, 1.05f);
             /* A lost plate is physical: it comes off the chassis as scrap. */
             spawn_parts(w, pcx, pcy, 6, 130.0f, 1.0f, rgba(190, 225, 255, 255), 0, 640.0f);
-            audio_play(SFX_HURT, 0.8f, 1.05f);
 
             if (p->plates <= 0) {
                 p->state = PS_DEAD;
