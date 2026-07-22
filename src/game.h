@@ -14,6 +14,7 @@ typedef struct {
     uint8_t jump, jump_edge;
     uint8_t dash, dash_edge;
     uint8_t down;
+    uint8_t up;                 /* aim up (Metal Slug style directional fire) */
     uint8_t tether, tether_edge;
     uint8_t attack, attack_edge;
     uint8_t pulse, pulse_edge;
@@ -52,6 +53,7 @@ typedef struct {
     float atk_chain_win;        /* time left to chain into the next hit */
     int   atk_chain;            /* 0,1,2 - which hit of the 3-hit chain */
     int   atk_hit;              /* this swing has already connected */
+    float aim_x, aim_y;         /* last fire direction, for the muzzle flash */
 
     float pulse_cd;             /* Pulse cooldown */
 
@@ -86,7 +88,7 @@ uint32_t enemy_fluid(arc_enemy_kind k);
 
 typedef struct {
     arc_enemy_kind kind;
-    float x, y, vx;
+    float x, y, vx, vy;         /* vy used by the hopping BOUNCER boss */
     float home_x, home_y, range; /* patrol bounds before it has a target */
     int   alive;
     float hit_flash;

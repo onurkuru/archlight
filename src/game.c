@@ -528,17 +528,17 @@ static void spawn_shot(arc_world *w, float x, float y, float ax, float ay, int f
 #define COP_MUZZLE_Y    34.0f
 #define TURRET_MUZZLE_X 19.0f    /* in the 25x23 turret frame */
 #define TURRET_MUZZLE_Y  2.0f
-/* Per-variant boss sprite rects and frame sizes, indexed by en->variant. */
+/* Bosses are Meridian machines, not vehicles: the flying variants (WARDEN,
+ * BOUNCER, TIDE) are a heavy combat drone, the grounded ones (COIL, CHORUS)
+ * an egg-turret robot. Both are 4-frame animated. boss_rect returns frame 0. */
+static int boss_grounded(int v) { return v == 2 || v == 4; }
+static int boss_frames(int v)   { return boss_grounded(v) ? CHORUS_FRAMES : DRONE_FRAMES; }
+static int boss_fw(int v)       { return boss_grounded(v) ? CHORUS_FRAME_W : DRONE_FRAME_W; }
 static arc_rect boss_rect(int v)
 {
-    switch (v) {
-        case 1: return RECT_BOSS_BOUNCER;
-        case 2: return RECT_BOSS_COIL;
-        case 3: return RECT_BOSS_TIDE;
-        case 4: return (arc_rect){ RECT_BOSS_CHORUS.x, RECT_BOSS_CHORUS.y,
-                                   CHORUS_FRAME_W, CHORUS_FRAME_H };
-        default: return RECT_BOSS_WARDEN;
-    }
+    return boss_grounded(v)
+        ? (arc_rect){ RECT_BOSS_CHORUS.x, RECT_BOSS_CHORUS.y, CHORUS_FRAME_W, CHORUS_FRAME_H }
+        : (arc_rect){ RECT_DRONE.x, RECT_DRONE.y, DRONE_FRAME_W, DRONE_FRAME_H };
 }
 
 #define WARDEN_MUZZLE_X 160.0f   /* in the 163x60 rig */
@@ -617,9 +617,28 @@ static void player_update(arc_world *w, arc_player *p, const arc_input *in, floa
            actually aim, and makes an air shot land instead of dropping. */
         if (!grounded && p->vy > 0) p->vy *= 0.62f;
 
-        /* Same transform draw_player uses, so the round starts at the barrel
-           that is actually on screen rather than at a guessed offset. */
         {
+            /* Metal Slug directional aim, straight from the stick: Up fires
+               up, Up + a direction fires the up-diagonal, a direction alone
+               fires level, Down (in the air) fires down / down-diagonal.
+               No auto-lock - the player points the gun, and hitting a flyer
+               means aiming up at it. */
+            float ax = 0.0f, ay = 0.0f;
+            if (in->up)   ay = -1.0f;
+            else if (in->down && !grounded) ay = 1.0f;
+            if (in->mx)   ax = (float)in->mx;
+            else if (ay == 0.0f) ax = (float)p->facing;   /* level shot forward */
+            if (ax == 0.0f && ay == 0.0f) ax = (float)p->facing;
+
+            /* Face the horizontal component before the muzzle is placed, so a
+               barrel drawn on the left never spits a round out to the right. A
+               pure-vertical shot keeps the current facing. */
+            if (ax != 0.0f) p->facing = ax > 0 ? 1 : -1;
+
+            /* Same transform draw_player uses, so the round starts at the
+               barrel that is actually on screen. For an up/down shot, nudge
+               the origin toward the muzzle's vertical so it does not spawn in
+               Nine's feet. */
             float dw = PLAYER_FRAME_W * PLAYER_VISUAL_SCALE;
             float dh = PLAYER_FRAME_H * PLAYER_VISUAL_SCALE;
             float sx = p->x + p->w * 0.5f - dw * 0.5f;
@@ -627,26 +646,10 @@ static void player_update(arc_world *w, arc_player *p, const arc_input *in, floa
             float mx, my;
             muzzle_world(sx, sy, dw, dh, PLAYER_FRAME_W, PLAYER_FRAME_H,
                          NINE_MUZZLE_X, NINE_MUZZLE_Y, p->facing, &mx, &my);
+            if (ay < 0) my = p->y + p->h * 0.25f;   /* up: from the shoulder */
 
-            /* Aim. Holding up or down fires diagonally, like the dash - but the
-               round also locks softly onto the nearest enemy ahead within a
-               cone, so a flying drone above you can be shot without pixel-
-               perfect aiming. That auto-lock is the fix for "robots don't get
-               hit": a purely horizontal round flew under everything airborne. */
-            float ax = (float)p->facing;
-            float ay = in->down ? 0.8f : (in->jump && !grounded ? -0.8f : 0.0f);
-
-            float best2 = 280.0f * 280.0f; int lock = -1;
-            for (int j = 0; j < w->enemy_count; j++) {
-                arc_enemy *en = &w->enemies[j];
-                if (!en->alive) continue;
-                float ex = en->x + ENEMY_W * 0.5f - mx;
-                float ey = en->y + ENEMY_H * 0.5f - my;
-                if (ex * p->facing < 0) continue;          /* only ahead */
-                float d2 = ex * ex + ey * ey;
-                if (d2 < best2) { best2 = d2; ax = ex; ay = ey; lock = j; }
-            }
-            spawn_shot(w, mx, my, ax, ay, 1, lock);
+            { float m = sqrtf(ax*ax+ay*ay); p->aim_x = ax/m; p->aim_y = ay/m; }
+            spawn_shot(w, mx, my, ax, ay, 1, -1);
         }
     }
 
@@ -1520,12 +1523,32 @@ static void enemies_update(arc_world *w, float dt)
                 en->vx = nx - en->x;    /* keep vx signed by travel so the sprite faces its motion */
                 en->x = nx;
                 en->y = en->home_y + sinf(en->state_t * 1.8f) * 34.0f;
+            } else if (V == 1) {
+                /* BOUNCER is a HOPPER, not a second rammer: it arcs across the
+                   arena under gravity, leaping toward you and slamming down,
+                   which is why the opening is to hit it from above at the top
+                   of its jump. Distinct movement from the WARDEN's ground rush. */
+                /* Land on the street surface (arena ground is row h-5), not
+                   below it: the sprite's foot sits ~28px under en->y. */
+                float floor_y = (w->h - 5) * (float)TILE - 28.0f;
+                en->vy += 1500.0f * dt;
+                en->y += en->vy * dt;
+                en->x += en->vx * dt;
+                if (en->y >= floor_y) {
+                    en->y = floor_y;
+                    en->vy = -520.0f - 40.0f * en->phase;         /* leap */
+                    en->vx = (pcx > en->x ? 1.0f : -1.0f) * (140.0f + 40.0f * en->phase);
+                    w->shake = 0.12f;                             /* the slam */
+                    if (en->phase >= 1 && fabsf(pcx - en->x) < 60.0f)
+                        spawn_shot(w, en->x + bw * 0.5f, en->y, 0.0f, 1.0f, 0, -1);
+                }
+                float lo = 2.0f * TILE, hi = w->w * (float)TILE - 2.0f * TILE - bw;
+                if (en->x < lo) { en->x = lo; en->vx = fabsf(en->vx); }
+                if (en->x > hi) { en->x = hi; en->vx = -fabsf(en->vx); }
             } else {
-                /* WARDEN and BOUNCER hunt: close, barrel through, re-acquire. */
+                /* WARDEN, the CHARGER: rushes side to side at the player's
+                   height. The only boss that rams - its whole identity. */
                 float dxp = pcx - (en->x + bw * 0.5f);
-                /* A 110px re-acquire deadzone let the rig stall next to a
-                   cornered player instead of pressing them; in a 15-tile box
-                   that read as passive. It now steers almost continuously. */
                 if (fabsf(dxp) > 36.0f)
                     en->vx = (dxp > 0 ? 1.0f : -1.0f) * speed;
                 en->x += en->vx * dt;
@@ -1534,20 +1557,12 @@ static void enemies_update(arc_world *w, float dt)
                 if (hi < lo) hi = lo;
                 if (en->x < lo) { en->x = lo; en->vx = speed; }
                 if (en->x > hi) { en->x = hi; en->vx = -speed; }
-                /* Hunters dive to the player's height. At a fixed rail height
-                   the contact box never reached the street, which made the
-                   rig a ceiling decoration you shoot down - standing still
-                   was completely safe. Now standing still gets you hit. */
-                {
-                    float want_y = pcy - 14.0f;
-                    float dive = V == 1 ? 5.0f : 2.5f;   /* BOUNCER dives harder */
-                    float k = dive * dt; if (k > 1.0f) k = 1.0f;
-                    en->y += (want_y - en->y) * k;
-                    if (en->y < en->home_y - 30.0f) en->y = en->home_y - 30.0f;
-                    if (en->y > pcy - 10.0f) en->y = pcy - 10.0f;  /* never sink below Nine */
-                    en->y += sinf(en->state_t * (V == 1 ? 2.2f : 1.3f))
-                             * (V == 1 ? 2.0f : 3.0f);
-                }
+                float want_y = pcy - 14.0f;
+                float k = 2.5f * dt; if (k > 1.0f) k = 1.0f;
+                en->y += (want_y - en->y) * k;
+                if (en->y < en->home_y - 30.0f) en->y = en->home_y - 30.0f;
+                if (en->y > pcy - 10.0f) en->y = pcy - 10.0f;
+                en->y += sinf(en->state_t * 1.3f) * 3.0f;
             }
 
             /* CHORUS summons: a dedicated countdown drops a drone every ~2.6 s,
@@ -2437,16 +2452,31 @@ static void draw_enemies(arc_world *w, int additive)
                    4-frame open/fire cycle; the rest are single frames carried by
                    motion. */
                 r = boss_rect(en->variant);
-                if (en->variant == 4) {
-                    int f = ((int)(w->time * 8.0f)) % CHORUS_FRAMES;
-                    r.x = RECT_BOSS_CHORUS.x + f * CHORUS_FRAME_W;
-                }
-                uint32_t hull = en->phase == 0 ? rgba(255, 255, 255, 255)
-                              : en->phase == 1 ? rgba(255, 220, 210, 255)
-                                               : rgba(255, 180, 170, 255);
-                if (en->hit_flash > 0) hull = rgba(255, 245, 230, 255);
-                float dw = r.w * 0.5f, dh = r.h * 0.5f;
-                city_quad(x - 4, y + 28.0f - dh, dw, dh, r,
+                int f = ((int)(w->time * (en->telegraph > 0 ? 16.0f : 8.0f)))
+                        % boss_frames(en->variant);
+                r.x += f * boss_fw(en->variant);
+
+                /* District tints the machine so five bosses read as five
+                   different units, not one drone recoloured by accident;
+                   it reddens as the phase drops, so damage state reads too. */
+                static const int HUE[5][3] = {
+                    {255,120,100}, {255,170,110}, {150,235,170},
+                    {120,220,255}, {210,140,255}
+                };
+                float wear = 1.0f - 0.25f * en->phase;
+                uint32_t hull = en->hit_flash > 0 ? rgba(255, 245, 230, 255)
+                    : rgba((int)(HUE[en->variant%5][0]),
+                           (int)(HUE[en->variant%5][1] * wear),
+                           (int)(HUE[en->variant%5][2] * wear), 255);
+
+                /* Scale the sprite to the gameplay width (bw*2), so a 128-wide
+                   COIL reads huge and a 48-wide WARDEN medium - the hitbox and
+                   the picture agree. */
+                float gw = boss_grounded(en->variant) ? 44.0f * 1.6f : 48.0f * 2.0f;
+                if (en->variant == 2) gw = 128.0f;      /* COIL is the big one */
+                float aspect = (float)r.h / (float)r.w;
+                float gh = gw * aspect;
+                city_quad(x + 4.0f - (gw - 44.0f) * 0.0f, y + 28.0f - gh, gw, gh, r,
                           en->vx < 0 ? FLIP_H : 0, hull);
                 continue;
             }
@@ -2684,7 +2714,7 @@ static void draw_hints(arc_world *w)
 {
     /* In-world tutorial text, per the GDD's "teach in safety" rule: it lives
        where the mechanic is first free to try, and is never repeated. */
-    static const char *HINTS[] = { "Z JUMP   X DASH   C TETHER   V FIRE   F HACK" };
+    static const char *HINTS[] = { "Z JUMP  X DASH  UP AIM  V FIRE  F HACK" };
 
     float pcx = w->p.x + w->p.w * 0.5f, pcy = w->p.y + w->p.h * 0.5f;
 
@@ -2754,16 +2784,19 @@ static void draw_muzzle(arc_world *w)
     if (elapsed > 0.12f) return;
     float k = 1.0f - elapsed / 0.12f;          /* 1 -> 0 */
 
-    /* The flash sits on the same measured barrel the round leaves from, so
-       the two never disagree about where the gun is. */
+    /* The flash sits at the barrel and pushes out along the aim direction, so
+       an up shot flashes above the shoulder and a diagonal flashes at 45. */
     float dw = PLAYER_FRAME_W * PLAYER_VISUAL_SCALE;
     float dh = PLAYER_FRAME_H * PLAYER_VISUAL_SCALE;
     float mx, my;
     muzzle_world(p->x + p->w * 0.5f - dw * 0.5f, p->y + p->h - dh, dw, dh,
                  PLAYER_FRAME_W, PLAYER_FRAME_H,
                  NINE_MUZZLE_X, NINE_MUZZLE_Y, p->facing, &mx, &my);
-    float bx = mx - w->cam_x;
-    float cy = my - w->cam_y;
+    if (p->aim_y < 0) my = p->y + p->h * 0.25f;   /* up shot: from the shoulder */
+
+    float ox = p->aim_x * 8.0f, oy = p->aim_y * 8.0f;
+    float bx = mx + ox - w->cam_x;
+    float cy = my + oy - w->cam_y;
 
     float g = 9.0f + 7.0f * k;
     quad(bx - g * 0.5f, cy - g * 0.5f, g, g, CELL_GLOW,
@@ -2771,10 +2804,10 @@ static void draw_muzzle(arc_world *w)
     quad(bx - 2.0f, cy - 2.0f, 4.0f, 4.0f, CELL_GLOW,
          rgba(255, 255, 245, (uint8_t)(255 * k)));
 
-    /* Recoil streak, behind the barrel and fading faster than the flash. */
+    /* Recoil streak, trailing back along the aim line. */
     float sl = 12.0f * k;
-    quad(bx - (p->facing > 0 ? sl : 0.0f), cy - 1.5f, sl, 3.0f, CELL_GLOW,
-         rgba(255, 190, 110, (uint8_t)(150 * k * k)));
+    quad(bx - p->aim_x * sl - 1.5f, cy - p->aim_y * sl - 1.5f, 3.0f, 3.0f,
+         CELL_GLOW, rgba(255, 190, 110, (uint8_t)(150 * k * k)));
 }
 
 /* Enemy rounds. Same bolt sprite as a Volt, tinted hot orange - cyan is

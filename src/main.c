@@ -164,6 +164,7 @@ static arc_input gather_input(void)
         if (ax >  8000) right = 1;
         in.mx     = (int8_t)(right - left);
         in.down   = SDL_JoystickGetButton(j, 6) || SDL_JoystickGetAxis(j, 1) > 8000;
+        in.up     = SDL_JoystickGetButton(j, 8) || SDL_JoystickGetAxis(j, 1) < -8000;
         in.jump   = SDL_JoystickGetButton(j, 2);
         in.dash   = SDL_JoystickGetButton(j, 1);
         in.tether = SDL_JoystickGetButton(j, 5);
@@ -175,6 +176,7 @@ static arc_input gather_input(void)
     in.mx     = (int8_t)((k[SDL_SCANCODE_RIGHT] || k[SDL_SCANCODE_D]) -
                          (k[SDL_SCANCODE_LEFT]  || k[SDL_SCANCODE_A]));
     in.down   = k[SDL_SCANCODE_DOWN] || k[SDL_SCANCODE_S];
+    in.up     = k[SDL_SCANCODE_UP]   || k[SDL_SCANCODE_W];
     in.jump   = k[SDL_SCANCODE_Z] || k[SDL_SCANCODE_SPACE];
     in.dash   = k[SDL_SCANCODE_X];
     in.tether = k[SDL_SCANCODE_C];

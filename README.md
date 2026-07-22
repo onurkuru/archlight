@@ -43,9 +43,10 @@ cmake --build build-vita          # -> build-vita/arclight.vpk
 | Arrows / WASD | run |
 | `Z` / Space | jump (hold for height, coyote time + input buffer) |
 | `X` | arc dash (8-way, ground or air) |
+| `Up` / `W` | aim up — hold while firing for up / up-diagonal shots (Metal Slug style) |
 | `Down + Z` in the air | stomp |
 | `C` | tether (auto-targets the nearest anchor ahead of you) |
-| `V` | fire — Nine's sidearm. A round with a muzzle flash and a little recoil; cyan is yours, orange is theirs. Never interrupts your run |
+| `V` | fire — Nine's sidearm, 8-way aimed by the stick (hold Up / Down while firing). Cyan is yours, orange is theirs. Never interrupts your run |
 | `F` | pulse — EMP the nearest drone (30 Charge): it drops for 3 s, then reboots. Never kills. At a terminal it opens the hack window instead, free — light the relay nodes by running through them before it closes and the gate unbolts |
 | `SPACE` | toggle the post stack (A/B its cost) |
 | `R` | restart the level |
@@ -66,12 +67,15 @@ street, turn to face you, and shoot after a 0.3 s visor flare. **Sentries** are
 bolted down and hold a lane — routed past, not fought.
 
 Bosses are single-screen duels: one locked camera frame, walled on both sides, no
-checkpoints and no exit — the level completes itself when the boss falls. Each of
-the five demands a different opening (cyan aura = open, red shimmer + clang =
-armoured): WARDEN is always open but relentless, BOUNCER only from above, COIL
-from behind or above, TIDE at the ends of its sweep, CHORUS only once its
-summoned drones are dead. A chipped boss guards for 0.7 s, dying resets it to
-full health, and the hunters dive to your height — standing still loses.
+checkpoints and no exit — the level completes itself when the boss falls. All five
+are Meridian machines (a combat drone or an egg-turret, district-tinted), and each
+moves and fires differently: WARDEN charges side to side, BOUNCER hops in arcs and
+slams down, COIL hangs back and lobs spread shots, TIDE sweeps high and rains fire,
+CHORUS holds centre and summons drones with radial bursts. Each demands a different
+opening (cyan aura = open, red shimmer + clang = armoured): WARDEN always, BOUNCER
+from above, COIL from behind or above, TIDE at the ends of its sweep, CHORUS only
+once its drones are dead. A chipped boss guards for 0.7 s and dying resets it to
+full health.
 
 Hazards: **moving platforms** shuttle across gaps (land on top, get carried — the
 street runs underneath, so a mover is always the fast line and never a wall) and
