@@ -443,7 +443,10 @@ def build_district(d, n, title, drones=0, cops=0, has_gate=True):
                 sx, sy = spots[min((k + 1) * stride, len(spots) - 1)]
                 trimmed.put(sx, sy, 'E')
 
+    # The drop is the end of the level: a full-height wall stands right behind
+    # it so you cannot run off into the void past the door - you deliver here.
     trimmed.put(W - 4, GY - 1, 'X')
+    trimmed.block(W - 2, 0, 2, GY)
     return f'{d}-{n}', title, trimmed
 
 

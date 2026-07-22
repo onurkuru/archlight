@@ -897,7 +897,12 @@ static void player_update(arc_world *w, arc_player *p, const arc_input *in, floa
     }
 
     /* ---- out of the world ---- */
-    if (p->y > w->h * TILE + 48.0f) {
+    /* Off the bottom, or off either horizontal end past the level's walls:
+       running past the delivery door at the end leads nowhere, so it kills
+       you rather than leaving you adrift in the void. */
+    if (p->y > w->h * TILE + 48.0f ||
+        p->x + p->w < -16.0f ||
+        p->x > w->w * TILE + 16.0f) {
         p->state = PS_DEAD;
         p->dead_time = 0;
     }
@@ -2679,7 +2684,7 @@ static void draw_hints(arc_world *w)
 {
     /* In-world tutorial text, per the GDD's "teach in safety" rule: it lives
        where the mechanic is first free to try, and is never repeated. */
-    static const char *HINTS[] = { "Z JUMP   X DASH   C TETHER   V BLADE   F HACK" };
+    static const char *HINTS[] = { "Z JUMP   X DASH   C TETHER   V FIRE   F HACK" };
 
     for (int i = 0; i < w->ent_count; i++) {
         arc_ent *e = &w->ents[i];
