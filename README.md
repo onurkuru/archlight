@@ -3,10 +3,11 @@
 A cinematic 2.5D cyberpunk flow-platformer for PlayStation Vita.
 *Rayman Legends' run, filmed like Replaced.*
 
-**Status: playable on desktop, never run on Vita hardware.** Twenty levels across five
-districts — three flow runs and a boss each — four enemy archetypes, a hack gate, and an
-opening. It cross-compiles and packs a VPK, but the question M0 exists to answer — whether
-the SGX543 holds 60 fps with this post stack — is still open.
+**Status: playable on desktop, never run on Vita hardware.** Ten levels across five
+districts — one flow run and one boss duel each — four enemy archetypes plus five
+distinct bosses, a hack gate, hazards, audio, and an opening. It cross-compiles and
+packs a VPK, but the question M0 exists to answer — whether the SGX543 holds 60 fps
+with this post stack — is still open.
 
 - [Game Design Document](docs/GDD.md) — story, mechanics, level design, art direction
 - [Technical Plan](docs/TECH_PLAN.md) — vitaGL pipeline, budgets, milestones, risks
@@ -60,14 +61,17 @@ cmake --build build-vita          # -> build-vita/arclight.vpk
 | `ARCLIGHT_PULSE_EVERY=s` | the same, for the pulse |
 | `ARCLIGHT_JUMP_EVERY=s` | the same, for the jump — mashing at a fixed rate is how you reproduce a movement bug the same way twice |
 
-Enemies: **Sentries** are bolted down and cover a lane — routed past, not
-fought. **Wardens** are the district bosses: they survive six hits, hunt you
-rather than patrol, and gain a firing phase as their health drops. The drop
-will not take the package while one is still on the rail.
+Enemies: **Scrappers** are flying drones — bounce targets. **Enforcers** walk the
+street, turn to face you, and shoot after a 0.3 s visor flare. **Sentries** are
+bolted down and hold a lane — routed past, not fought.
 
-**Scrappers** are flying drones — bounce targets. **Enforcers** walk the street,
-turn to face you, and shoot after a 0.3 s visor flare. **Sentries** are bolted
-down and hold a lane. **Wardens** are the bosses.
+Bosses are single-screen duels: one locked camera frame, walled on both sides, no
+checkpoints and no exit — the level completes itself when the boss falls. Each of
+the five demands a different opening (cyan aura = open, red shimmer + clang =
+armoured): WARDEN is always open but relentless, BOUNCER only from above, COIL
+from behind or above, TIDE at the ends of its sweep, CHORUS only once its
+summoned drones are dead. A chipped boss guards for 0.7 s, dying resets it to
+full health, and the hunters dive to your height — standing still loses.
 
 Hazards: **moving platforms** shuttle across gaps (land on top, get carried — the
 street runs underneath, so a mover is always the fast line and never a wall) and
@@ -77,9 +81,11 @@ to drop it for four seconds (GDD verb 7, "kills lasers").
 
 Frame stats print once per second: fps, ms, draw calls, quads.
 
-Levels are generated, not hand-placed — `tools/genlevels.py` describes each one as grid
-operations (streets, stairs, Volt trails, enemy placements) and refuses to emit anything
-that fails validation. Beyond the GDD's authoring rules (one spawn, one exit, ≤70 tiles
+Levels are generated, not hand-placed — `tools/genlevels.py` composes each district's
+flow level from that district's own section pool (D1 rooftops and cover, D2 tethers
+and movers, D3 wall-jump shafts, D4 a flat coastal highway, D5 lab corridors), so no
+two districts are built from the same moves, and refuses to emit anything that fails
+validation. Beyond the GDD's authoring rules (one spawn, one exit, ≤70 tiles
 between checkpoints) it runs a **reachability flood fill** derived from the physics
 constants in `src/game.c`: it walks the level the way the player can, with the gate shut
 and again with it open, and fails the build if the exit, a checkpoint, a terminal, a relay
