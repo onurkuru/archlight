@@ -120,10 +120,20 @@ def stair(g, x, top_row, steps, width=8, overlap=6):
         g.plat(x + i * (width - overlap), top_row + (steps - 1 - i) * 2, width)
 
 
-def gate(g, GY, x):
-    """The standard hack gate: terminal on the approach, relay nodes up a
-    walled shaft, shutter past the top. Identical in every district on
-    purpose - the verb should read as learned, never as re-taught."""
+def gate(g, GY, x, style='climb'):
+    """The hack gate, in two shapes so it is not the same tower-ladder in
+    every level (which it was, and which read as the same climb everywhere):
+
+    - 'climb': the original walled shaft - nodes up a ladder (D1, D3)
+    - 'run':   a low hop-line of nodes straight at the shutter - hack on the
+               approach, collect at speed, no ladder at all (D2, D4, D5)"""
+    if style == 'run':
+        g.put(x, GY - 2, 'H')
+        g.put(x + 3, GY - 2, 'N')
+        g.put(x + 5, GY - 3, 'N')
+        g.put(x + 7, GY - 2, 'N')
+        g.door(x + 10, GY - 15, GY - 1)
+        return
     g.block(x, GY - 10, 2, 8)
     g.block(x + 5, GY - 10, 2, 8)
     g.plat(x, GY - 2, 7)
@@ -253,7 +263,8 @@ def sec_awning(g, GY, x, d):
 
 
 def sec_gate(g, GY, x, d):
-    gate(g, GY, x + 4)
+    district = d // 3 + 1                  # d is the campaign step (0,3,6,9,12)
+    gate(g, GY, x + 4, 'climb' if district in (1, 3) else 'run')
     return 26
 
 
@@ -360,12 +371,17 @@ SECTIONS = [sec_run, sec_roof, sec_shaft, sec_tether, sec_sentry, sec_awning,
 
 # Each district leans on two of them, so a place has a shape as well as a sky:
 # the Stacks are vertical, the Lab is corridors, the Shoreline is open road.
-DISTRICT_BIAS = {
-    1: [sec_roof, sec_cover],        # street level, cover firefights
-    2: [sec_tether, sec_movers],     # the Strip swings and shuttles
-    3: [sec_shaft, sec_movers],      # the Stacks are cranes and hoists
-    4: [sec_run, sec_beams],         # the Shoreline has the checkpoints lit
-    5: [sec_beams, sec_cover],       # the Lab is beams and entrenched guns
+# Each district draws ONLY from its own pool, so its level is built from its
+# own moves - no shared rotation quietly putting the same stair-climb in all
+# five. Verticality itself changes flavour: D1 climbs rooftops, D2 rides
+# movers and swings, D3 wall-jumps shafts, D4 is a flat coastal road with no
+# climb at all, D5 is low corridors.
+DISTRICT_POOLS = {
+    1: [sec_roof, sec_cover, sec_awning, sec_run],       # streets & rooftops
+    2: [sec_tether, sec_movers, sec_awning, sec_sentry], # swing & shuttle
+    3: [sec_shaft, sec_movers, sec_steps, sec_underpass],# vertical: shafts, hoists
+    4: [sec_beams, sec_tether, sec_run, sec_sentry],     # flat dusk highway
+    5: [sec_cover, sec_beams, sec_underpass, sec_sentry],# lab corridors
 }
 
 
@@ -375,25 +391,10 @@ def build_district(d, n, title, drones=0, cops=0, has_gate=True):
     step = (d - 1) * 3 + (n - 1)
     diff = step
 
-    # Build the running order: an opening straight, then a rotation through the
-    # pool with the district's two favourites pushed in, then the gate.
-    # Rotate the vocabulary by level and take each shape at most once: a level
-    # that used `awning` twice and `run` three times read as one repeated map,
-    # which is exactly the complaint this rewrite exists to answer.
-    rot = (step * 3) % len(SECTIONS)
-    pool = SECTIONS[rot:] + SECTIONS[:rot]
-
-    order = [sec_run]
-    for fav in DISTRICT_BIAS[d]:               # the district's own two shapes
-        if fav not in order:
-            order.append(fav)
-    for sec in pool:                            # then the rest of the rotation
-        if len(order) >= 6:
-            break
-        if sec not in order:
-            order.append(sec)
+    # An opening straight, then the district's own pool, gate slotted in.
+    order = [sec_run] + DISTRICT_POOLS[d]
     if has_gate:
-        order.insert(2 + (step % 3), sec_gate)
+        order.insert(2 + (d % 2), sec_gate)
 
     # Lay them out end to end, dropping a checkpoint every second section.
     g = Grid(400, 26)                      # oversized; trimmed once we know W
@@ -446,40 +447,25 @@ def build_district(d, n, title, drones=0, cops=0, has_gate=True):
     return f'{d}-{n}', title, trimmed
 
 
-def build_boss(d, title, W=170):
-    """A district's boss run. Wide, flat, and almost empty: the Warden sweeps
-    the whole street, so the arena's job is to give you room to be somewhere
-    else and two rooftops to be somewhere else *on*. Adding platforming here
-    would just be a second boss."""
+def build_boss(d, title):
+    """A district's boss: one locked screen, nothing else.
+
+    The arena is exactly one camera window (15 tiles) walled on both sides -
+    no run, no checkpoints, no exit door. You and the rig in a box; the level
+    completes itself when the rig goes down (game.c auto-finish). Two low
+    ledges and the walls give the height the openings demand (the stomp line,
+    getting behind COIL), and that is all the geometry a duel needs."""
+    W = 15                        # == VIEW_W: the camera cannot scroll
     g = Grid(W, 26)
     GY = 21
     g.street(0, W - 1, GY)
-    g.put(3, GY - 2, 'S')
-    g.put(30, GY - 1, 'C')
-    g.put(96, GY - 1, 'C')
-
-    # Two low roofs to break line of fire and to stomp down from.
-    stair(g, 26, GY - 4, 2)
-    g.block(36, GY - 6, 14, 2)
-    stair(g, 84, GY - 4, 2)
-    g.block(94, GY - 6, 14, 2)
-
-    # Sentries at the arena's ends: they punish camping in a corner, which is
-    # otherwise the whole counter to a sweeping boss.
-    g.put(14, GY - 2, 'u')
-    g.put(W - 16, GY - 2, 'u')
-
-    # The rig, on the rail just above head height. Low enough that a plain
-    # jump reaches its underside, so the fight is playable from the street and
-    # the roofs are an advantage rather than a requirement.
-    g.put(70, GY - 4, 'W')
-
-    g.volts(20, GY - 2, 60, GY - 2, 10)
-    g.volts(76, GY - 2, 116, GY - 2, 10)
-    g.put(38, GY - 7, 'E')
-    g.put(100, GY - 7, 'E')
-    g.put(120, GY - 3, 'E')
-    g.put(W - 4, GY - 1, 'X')
+    g.block(0, 0, 1, GY)          # full-height walls: nobody leaves the box,
+    g.block(W - 1, 0, 1, GY)      # and they double as wall-jump surfaces
+    g.plat(1, GY - 2, 4)          # side ledges, one jump up: the stomp line
+    g.plat(W - 5, GY - 2, 4)
+    g.put(2, GY - 3, 'S')         # spawn ON the left ledge (placed after it,
+                                  # or the plat overwrites the marker)
+    g.put(7, GY - 5, 'W')         # the rig, centre stage
     return f'{d}-2', title, g
 
 
@@ -869,7 +855,8 @@ def validate(name, g):
     flat = ''.join(rows)
     if flat.count('S') != 1:
         problems.append(f"{name}: needs exactly one spawn, found {flat.count('S')}")
-    if flat.count('X') != 1:
+    # A boss arena carries no exit: the level completes when the boss dies.
+    if flat.count('X') != 1 and flat.count('W') == 0:
         problems.append(f"{name}: needs exactly one exit, found {flat.count('X')}")
 
     echoes = flat.count('E')
@@ -882,8 +869,8 @@ def validate(name, g):
     # are frequent and the whole pillar is that death is cheap.
     cps = sorted(x for y in range(g.h) for x in range(g.w) if g.g[y][x] == 'C')
     spawn = next(x for y in range(g.h) for x in range(g.w) if g.g[y][x] == 'S')
-    exit_x = next(x for y in range(g.h) for x in range(g.w) if g.g[y][x] == 'X')
-    marks = [spawn] + cps + [exit_x]
+    exit_xs = [x for y in range(g.h) for x in range(g.w) if g.g[y][x] == 'X']
+    marks = [spawn] + cps + exit_xs
     for a, b in zip(marks, marks[1:]):
         if b - a > 70:
             problems.append(f"{name}: {b - a} tiles between checkpoints at x={a} "

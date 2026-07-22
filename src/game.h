@@ -230,6 +230,10 @@ typedef struct {
        story cards and give away numbers before the run has started. */
     int   hide_hud;
 
+    /* Boss arenas have no exit door: the level completes when the boss dies.
+       Set at load if the level shipped with a Warden in it. */
+    int   boss_level;
+
     /* The hack gate: Pulse a terminal, then run the lit nodes before the
        window closes and the door unbolts. The puzzle input is movement itself
        - a hack that froze the game in a minigame would break the run pillar,

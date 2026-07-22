@@ -254,7 +254,7 @@ void world_load(arc_world *w, int index)
                             en->variant = d->district % 5;
                             /* Later bosses take more, but the curve is gentle:
                                the fights differ in shape, not in bullet-sponge. */
-                            static const int BOSS_HP[5] = { 6, 7, 8, 8, 10 };
+                            static const int BOSS_HP[5] = { 8, 10, 10, 10, 12 };
                             en->hp = en->hp_max = BOSS_HP[en->variant];
                         } else {
                             en->hp = en->hp_max = 1;
@@ -276,6 +276,9 @@ void world_load(arc_world *w, int index)
     w->check_x = w->spawn_x;
     w->check_y = w->spawn_y;
     w->base_enemy_count = w->enemy_count;   /* everything above this is summoned */
+    w->boss_level = 0;
+    for (int i = 0; i < w->enemy_count; i++)
+        if (w->enemies[i].kind == EN_WARDEN) w->boss_level = 1;
     world_reset_to_checkpoint(w);
     w->cam_x = w->p.x - ARC_W * 0.5f;
     w->cam_y = w->p.y - ARC_H * 0.6f;
@@ -1092,7 +1095,10 @@ static void enemy_kill(arc_world *w, arc_enemy *en, float dir, float weight)
     /* Anything with hp left takes the hit and stays up. The feedback is the
        same either way - what changes is whether the thing falls over. */
     if (--en->hp > 0) {
-        en->hit_flash = 0.16f;
+        /* Bosses hold a longer guard after a chip: it caps the damage rate
+           from every verb at ~2/s, which is what makes "hard" mean the fight
+           is long enough to learn, not that your gun is slow. */
+        en->hit_flash = en->kind == EN_WARDEN ? 0.70f : 0.16f;
         en->squash = -0.5f;
         float cx0 = en->x + ENEMY_W * 0.5f, cy0 = en->y + ENEMY_H * 0.5f;
         float stop = 0.05f + 0.05f * weight;
@@ -1250,7 +1256,8 @@ static void shots_update(arc_world *w, float dt)
                     s->y > en->y && s->y < en->y + eh) {
                     /* A round on a boss's armour clangs off - the gun cannot
                        shortcut the opening the boss demands. */
-                    if (en->kind == EN_WARDEN && !boss_vulnerable(w, en, s->x))
+                    if (en->kind == EN_WARDEN &&
+                        (en->hit_flash > 0 || !boss_vulnerable(w, en, s->x)))
                         boss_clang(w, s->x, s->y);
                     else
                         enemy_kill(w, en, s->vx > 0 ? 1.0f : -1.0f, 0.35f);
@@ -1480,28 +1487,49 @@ static void enemies_update(arc_world *w, float dt)
                 en->x += en->vx * dt;
                 /* Clamp to the arena like WARDEN/BOUNCER, or the player can
                    herd the 128px rig into a wall and strand it out of reach. */
-                float clo = 2.0f * TILE, chi = (w->w - 12) * (float)TILE - bw;
+                float clo = 2.0f * TILE;
+                float chi = w->w * (float)TILE - 2.0f * TILE - bw;
+                if (chi < clo) chi = clo;   /* tiny arena: pin rather than invert */
                 if (en->x < clo) en->x = clo;
                 if (en->x > chi) en->x = chi;
                 en->y = en->home_y + sinf(en->state_t * 0.9f) * 6.0f;
             } else if (V == 3) {
                 /* TIDE sweeps the whole arena in a wide sine, high then low. */
-                float span = (w->w - 20) * (float)TILE;
-                float nx = 8.0f * TILE + (0.5f - 0.5f * cosf(en->state_t * 0.7f)) * span;
+                float tlo = 2.0f * TILE;
+                float thi = w->w * (float)TILE - 2.0f * TILE - bw;
+                float span = thi > tlo ? thi - tlo : 0.0f;
+                float nx = tlo + (0.5f - 0.5f * cosf(en->state_t * 0.7f)) * span;
                 en->vx = nx - en->x;    /* keep vx signed by travel so the sprite faces its motion */
                 en->x = nx;
                 en->y = en->home_y + sinf(en->state_t * 1.8f) * 34.0f;
             } else {
                 /* WARDEN and BOUNCER hunt: close, barrel through, re-acquire. */
                 float dxp = pcx - (en->x + bw * 0.5f);
-                if (fabsf(dxp) > 110.0f)
+                /* A 110px re-acquire deadzone let the rig stall next to a
+                   cornered player instead of pressing them; in a 15-tile box
+                   that read as passive. It now steers almost continuously. */
+                if (fabsf(dxp) > 36.0f)
                     en->vx = (dxp > 0 ? 1.0f : -1.0f) * speed;
                 en->x += en->vx * dt;
-                float lo = 2.0f * TILE, hi = (w->w - 12) * (float)TILE;
+                float lo = 2.0f * TILE;
+                float hi = w->w * (float)TILE - 2.0f * TILE - bw;
+                if (hi < lo) hi = lo;
                 if (en->x < lo) { en->x = lo; en->vx = speed; }
                 if (en->x > hi) { en->x = hi; en->vx = -speed; }
-                en->y = en->home_y + sinf(en->state_t * (V == 1 ? 2.2f : 1.3f))
-                        * (V == 1 ? 6.0f : 10.0f);
+                /* Hunters dive to the player's height. At a fixed rail height
+                   the contact box never reached the street, which made the
+                   rig a ceiling decoration you shoot down - standing still
+                   was completely safe. Now standing still gets you hit. */
+                {
+                    float want_y = pcy - 14.0f;
+                    float dive = V == 1 ? 5.0f : 2.5f;   /* BOUNCER dives harder */
+                    float k = dive * dt; if (k > 1.0f) k = 1.0f;
+                    en->y += (want_y - en->y) * k;
+                    if (en->y < en->home_y - 30.0f) en->y = en->home_y - 30.0f;
+                    if (en->y > pcy - 10.0f) en->y = pcy - 10.0f;  /* never sink below Nine */
+                    en->y += sinf(en->state_t * (V == 1 ? 2.2f : 1.3f))
+                             * (V == 1 ? 2.0f : 3.0f);
+                }
             }
 
             /* CHORUS summons: a dedicated countdown drops a drone every ~2.6 s,
@@ -1571,7 +1599,7 @@ static void enemies_update(arc_world *w, float dt)
                         en->shoot_cd = fire_cd;
                     }
                 } else if (en->shoot_cd <= 0 && p->state != PS_DEAD) {
-                    en->telegraph = SHOT_TELEGRAPH * 1.3f;
+                    en->telegraph = SHOT_TELEGRAPH * (en->phase >= 2 ? 0.8f : 1.3f);
                 }
             }
 
@@ -1815,6 +1843,15 @@ static void camera_update(arc_world *w, float dt)
 
     /* Look-ahead in the direction of travel, scaled by speed: the camera shows
        you where you are going, not where you are. */
+    /* A single-screen arena pins the camera outright: the box IS the shot,
+       and a camera that bobbed with every jump would fight the duel. The 54px
+       lift frames the street in the lower third with the boss centre-frame. */
+    if (w->w * TILE <= VIEW_W) {
+        w->cam_x = 0;
+        w->cam_y = (float)(w->h * TILE - VIEW_H) - 54.0f;
+        return;
+    }
+
     float lead = (p->vx / RUN_MAX) * 36.0f;
     float tx = p->x + p->w * 0.5f + lead - VIEW_W * 0.5f;
     float ty = p->y + p->h * 0.5f - VIEW_H * 0.55f;
@@ -1846,6 +1883,18 @@ void world_update(arc_world *w, const arc_input *in, float dt)
     player_update(w, &w->p, in, dt);
     lasers_update(w, dt);
     enemies_update(w, dt);
+
+    /* A boss arena is a duel, not a run: there is no exit door, so the level
+       completes itself once the rig is down and its death has finished
+       playing. (Guarded on the player being alive - a trade where both die
+       should read as a death, not a win.) */
+    if (w->boss_level && !w->finished && w->p.state != PS_DEAD) {
+        int up = 0;
+        for (int i = 0; i < w->enemy_count; i++)
+            if (w->enemies[i].kind == EN_WARDEN &&
+                (w->enemies[i].alive || w->enemies[i].death_t > 0)) up = 1;
+        if (!up) w->finished = 1;
+    }
     shots_update(w, dt);
     parts_update(w, dt);
     collect(w, &w->p, dt);
