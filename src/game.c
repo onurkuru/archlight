@@ -1042,6 +1042,49 @@ static void slash_sweep(int chain, int facing, float *a0, float *a1)
  * the debris reads as consequence, and the Charge refund reads as permission
  * to keep moving. Enemies are flow nodes, not walls (GDD §3.1: "most enemies
  * are solved by routing past them" - this is routing *through* them). */
+/* Each boss has a different opening, so the five fights are five puzzles
+ * rather than one rig at five sizes. Returns whether the boss can be damaged
+ * right now, given where the hit is coming from (hit_x). WARDEN is always
+ * open; the rest demand a specific verb or position. */
+static int boss_vulnerable(const arc_world *w, const arc_enemy *en, float hit_x)
+{
+    const arc_player *p = &w->p;
+    switch (en->variant) {
+        case 1:  /* BOUNCER: too fast to trade with on the ground - come down on
+                    it from above (a stomp, or any airborne descent onto it) */
+            return p->state == PS_STOMP ||
+                   (p->vy > 0.0f && p->y + p->h * 0.5f < en->y + 10.0f);
+        case 2: { /* COIL: front-plated - hit it from behind, or stomp it */
+            float bw = 128.0f, facing = en->vx >= 0 ? 1.0f : -1.0f;
+            int from_behind = (hit_x - (en->x + bw * 0.5f)) * facing < 0.0f;
+            return p->state == PS_STOMP || from_behind;
+        }
+        case 3: { /* TIDE: shielded mid-sweep, exposed at the ends of its arc.
+                     Position-based, not instantaneous speed, so the opening is
+                     a readable ~1 s window rather than a single frame. */
+            float c = 0.5f - 0.5f * cosf(en->state_t * 0.7f);   /* 0..1 sweep */
+            return c < 0.18f || c > 0.82f;
+        }
+        case 4: { /* CHORUS: invulnerable while any of its drones still live */
+            for (int i = 0; i < w->enemy_count; i++)
+                if (w->enemies[i].kind == EN_SCRAPPER && w->enemies[i].alive)
+                    return 0;
+            return 1;
+        }
+        default: return 1;   /* WARDEN */
+    }
+}
+
+/* A hit that lands on a boss's armour: spark and a metal clang, no damage, so
+ * the player reads "wrong opening" instead of "my attack did nothing". */
+static void boss_clang(arc_world *w, float x, float y)
+{
+    w->emp_t = 0.0f;
+    spawn_parts(w, x, y, 5, 130.0f, 1.0f, rgba(210, 220, 235, 255), 0, 300.0f);
+    audio_play(SFX_BOSS_HIT, 0.5f, 1.7f);
+    if (0.10f > w->shake) w->shake = 0.10f;
+}
+
 static void enemy_kill(arc_world *w, arc_enemy *en, float dir, float weight)
 {
     arc_player *p = &w->p;
@@ -1060,7 +1103,10 @@ static void enemy_kill(arc_world *w, arc_enemy *en, float dir, float weight)
         spawn_spray(w, cx0, cy0, dir, -0.3f, 6, 170.0f, 1.0f,
                     enemy_fluid(en->kind), 1);
         gain(p, 6.0f);
-        p->air_dash = 1;
+        /* Popcorn hits refund an air-dash to reward routing through a crowd;
+           bosses do not, or the fight becomes infinite air mobility (an
+           exploit the review flagged). */
+        if (en->kind != EN_WARDEN) p->air_dash = 1;
         return;
     }
 
@@ -1202,7 +1248,12 @@ static void shots_update(arc_world *w, float dt)
                 float eh = en->kind == EN_WARDEN ? 40.0f : ENEMY_H;
                 if (s->x > en->x && s->x < en->x + ew &&
                     s->y > en->y && s->y < en->y + eh) {
-                    enemy_kill(w, en, s->vx > 0 ? 1.0f : -1.0f, 0.35f);
+                    /* A round on a boss's armour clangs off - the gun cannot
+                       shortcut the opening the boss demands. */
+                    if (en->kind == EN_WARDEN && !boss_vulnerable(w, en, s->x))
+                        boss_clang(w, s->x, s->y);
+                    else
+                        enemy_kill(w, en, s->vx > 0 ? 1.0f : -1.0f, 0.35f);
                     s->alive = 0;
                     break;
                 }
@@ -1460,11 +1511,11 @@ static void enemies_update(arc_world *w, float dt)
             if (V == 4 && en->phase >= 1) {
                 en->summon_cd -= dt;
                 if (en->summon_cd <= 0.0f) {
-                    en->summon_cd = 2.6f;
+                    en->summon_cd = 3.4f;   /* slow enough that 2 drones are always clearable */
                     int live = 0;
                     for (int j = 0; j < w->enemy_count; j++)
                         if (w->enemies[j].kind == EN_SCRAPPER && w->enemies[j].alive) live++;
-                    if (live < 3 && w->enemy_count < MAX_ENEMIES) {
+                    if (live < 2 && w->enemy_count < MAX_ENEMIES) {
                         arc_enemy *nd = &w->enemies[w->enemy_count++];
                         memset(nd, 0, sizeof *nd);
                         nd->kind = EN_SCRAPPER;
@@ -1535,7 +1586,12 @@ static void enemies_update(arc_world *w, float dt)
                    it in one pass. enemy_kill sets hit_flash ~0.16 s, so this
                    caps it at one chip per dash. */
                 if (wins && en->hit_flash <= 0.0f) {
-                    enemy_kill(w, en, pcx < en->x ? 1.0f : -1.0f, 1.0f);
+                    if (boss_vulnerable(w, en, pcx)) {
+                        enemy_kill(w, en, pcx < en->x ? 1.0f : -1.0f, 1.0f);
+                    } else {
+                        boss_clang(w, pcx, pcy);
+                        en->hit_flash = 0.12f;   /* debounce the clang too */
+                    }
                     if (p->state == PS_STOMP) { p->vy = -STOMP_V * 0.6f; p->state = PS_AIR; }
                     p->invuln = 0.5f;
                 } else if (!wins && p->invuln <= 0 && p->state != PS_DEAD) {
@@ -2283,6 +2339,20 @@ static void draw_enemies(arc_world *w, int additive)
                      rgba(255, 70, 90, (uint8_t)(150 * (1.25f - beat))));
                 if (en->telegraph > 0)
                     quad(x + bw * 0.5f - 16, y, 32, 32, CELL_GLOW, rgba(255, 220, 170, 200));
+
+                /* Read the opening: a cyan aura when the boss can be hit right
+                   now, a dim red shield-shimmer when its armour is up. This is
+                   what turns "why isn't my attack working" into a puzzle you
+                   can see the answer to. */
+                if (en->variant != 0) {
+                    if (boss_vulnerable(w, en, w->p.x + w->p.w * 0.5f)) {
+                        float pulse = 0.6f + 0.4f * sinf(w->time * 9.0f);
+                        quad(x - 6, y - 6, bw * 2 + 12, h + 12, CELL_GLOW,
+                             rgba(120, 245, 255, (uint8_t)(70 * pulse)));
+                    } else {
+                        quad(x, y, bw * 2, h, CELL_GLOW, rgba(220, 60, 80, 40));
+                    }
+                }
             } else if (en->kind == EN_TURRET) {
                 quad(x + bw * 0.5f - 7, y + h - 16, 14, 14, CELL_GLOW,
                      en->telegraph > 0 ? rgba(255, 225, 170, 220)

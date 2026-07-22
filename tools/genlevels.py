@@ -173,9 +173,11 @@ def spread(g, x, n, count, place, margin=5):
 def sec_run(g, GY, x, d):
     """Open street. Room to hit top speed, a patrol strung along it."""
     n = 26
-    spread(g, x, n, min(1 + d // 4, 3), lambda px: g.cop(px, GY - 2))
+    spread(g, x, n, min(1 + d // 3, 5), lambda px: g.cop(px, GY - 2))
     if d >= 2:
         g.enemy(x + 14, GY - 5)
+    if d >= 7:
+        g.enemy(x + 20, GY - 4)
     g.volts(x + 4, GY - 2, x + n - 4, GY - 2, 7)
     return n
 
@@ -190,7 +192,7 @@ def sec_roof(g, GY, x, d):
     ry = GY - 2 * steps - 2
     g.block(rx, ry, rw, 2)
     g.put(rx + rw // 2, ry - 1, 'E')
-    spread(g, rx, rw, min(1 + d // 5, 3), lambda px: g.enemy(px, ry - 4), margin=3)
+    spread(g, rx, rw, min(1 + d // 3, 4), lambda px: g.enemy(px, ry - 4), margin=3)
     if d >= 3:
         g.cop(x + 6, GY - 2)              # someone waiting under the stair
     g.volts(x + 2, GY - 3, rx + 2, ry - 1, 6)
@@ -220,7 +222,9 @@ def sec_tether(g, GY, x, d):
     g.put(x + 15, GY - 12, 'A')
     g.put(x + 24, GY - 10, 'A')
     g.arc(x + 2, GY - 6, x + n - 2, GY - 6, 6, 12)
-    spread(g, x, n, min(2 + d // 4, 5), lambda px: g.cop(px, GY - 2))
+    spread(g, x, n, min(2 + d // 3, 6), lambda px: g.cop(px, GY - 2))
+    if d >= 9:
+        g.put(x + n // 2, GY - 2, 'u')
     return n
 
 
@@ -240,8 +244,10 @@ def sec_awning(g, GY, x, d):
     """A one-way awning over a street group: stomp through it, or run under."""
     n = 22
     g.plat(x + 4, GY - 5, 12)
-    spread(g, x, n, min(2 + d // 3, 4), lambda px: g.cop(px, GY - 2), margin=4)
+    spread(g, x, n, min(2 + d // 2, 6), lambda px: g.cop(px, GY - 2), margin=4)
     g.enemy(x + 10, GY - 8)
+    if d >= 9:
+        g.enemy(x + 15, GY - 9)
     g.volts(x + 4, GY - 6, x + 15, GY - 6, 5)
     return n
 
@@ -305,10 +311,12 @@ def sec_cover(g, GY, x, d):
             g.crate(cx + i, GY - 2, 2)
     g.cop(x + 20, GY - 2)
     g.cop(x + 30, GY - 2)
-    if d >= 3:
+    if d >= 2:
         g.put(x + 25, GY - 2, 'u')      # a sentry pinning the middle
     if d >= 5:
         g.enemy(x + 24, GY - 7)         # and a drone over the top
+    if d >= 8:
+        g.cop(x + 16, GY - 2); g.cop(x + 18, GY - 2)  # a heavier line
     g.volts(x + 5, GY - 4, x + 18, GY - 4, 6)
     return n
 
